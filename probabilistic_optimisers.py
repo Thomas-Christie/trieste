@@ -1,7 +1,7 @@
 import tensorflow as tf
 import trieste
 import gpflow
-from trieste.models.gpflow import GaussianProcessRegression
+from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 from trieste.space import Box
 from trieste.data import Dataset
 from trieste.observer import Observer
@@ -12,7 +12,7 @@ from functions import constraints
 from functions import objectives
 from functools import partial
 
-NUM_INITIAL_SAMPLES = 10
+NUM_INITIAL_SAMPLES = 5
 INEQUALITY_CONSTRAINT_ONE = "INEQUALITY_CONSTRAINT_ONE"
 INEQUALITY_CONSTRAINT_TWO = "INEQUALITY_CONSTRAINT_TWO"
 
@@ -185,8 +185,8 @@ def augmented_lagrangian_optimiser_unknown_functions(search_space: Box,
 
 
 def create_model(data):
-    # gpr = build_gpr(data, search_space, likelihood_variance=1e-7)
-    gpr = gpflow.models.GPR(data.astuple(), kernel=gpflow.kernels.SquaredExponential())
+    gpr = build_gpr(data, search_space, likelihood_variance=1e-7)
+    # gpr = gpflow.models.GPR(data.astuple(), kernel=gpflow.kernels.SquaredExponential())
     return GaussianProcessRegression(gpr, num_rff_features=500)
 
 
