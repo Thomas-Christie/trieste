@@ -35,12 +35,12 @@ if __name__ == "__main__":
     initial_models = trieste.utils.map_values(create_model, initial_data)
 
     # inequality_lambda = tf.constant([[2.0], [2.0]], dtype=tf.float64)
-    inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.Variable(2.0, dtype=tf.float64),
-                         INEQUALITY_CONSTRAINT_TWO: tf.Variable(2.0, dtype=tf.float64)}
+    inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.Variable(0.0, dtype=tf.float64),
+                         INEQUALITY_CONSTRAINT_TWO: tf.Variable(0.0, dtype=tf.float64)}
     initial_penalty = tf.Variable(0.5, dtype=tf.float64)
 
     augmented_lagrangian = UpdatedThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", None, inequality_lambda, None,
-                                                               initial_penalty, 0.001, search_space)
+                                                               initial_penalty, 0.001, search_space, True)
 
     rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer())
     bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
