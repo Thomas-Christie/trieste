@@ -1,0 +1,3 @@
+Ran on toy problem with initial:
+- Inequality Lambda = [0, 0]
+- Penalty = 8.0
