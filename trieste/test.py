@@ -2,8 +2,7 @@ import tensorflow as tf
 import gpflow
 import trieste
 from trieste.acquisition.optimizer import generate_continuous_optimizer
-from trieste.acquisition.function.constrained_thompson_sampling import ThompsonSamplingAugmentedLagrangian
-from trieste.acquisition.function.updated_constrained_thompson_sampling import UpdatedThompsonSamplingAugmentedLagrangian, BatchThompsonSamplingAugmentedLagrangian
+from trieste.acquisition.function.new_constrained_thompson_sampling import ThompsonSamplingAugmentedLagrangian, BatchThompsonSamplingAugmentedLagrangian
 from trieste.acquisition.rule import EfficientGlobalOptimization
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 from trieste.space import Box

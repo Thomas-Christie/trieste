@@ -19,7 +19,7 @@ from ..interface import (
 )
 
 # Makes use of Lagrange multipliers easier to read, but less vectorised
-class UpdatedThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajectorySampler]):
+class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajectorySampler]):
     """
     Builder for an augmented Lagrangian acquisition function using Thompson sampling.
     """
