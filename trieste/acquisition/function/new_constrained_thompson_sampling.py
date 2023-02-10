@@ -345,7 +345,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         epsilon: float = 0.001,
         search_space: Optional[SearchSpace] = None,
         save_lambda = False,
-        save_path: str = None
+        save_path: str = None,
+        num_bo_iters: int = None,
     ):
         """
         :param objective_tag: The tag for the objective data and model.
@@ -379,6 +380,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._augmented_lagrangian_fn = None
         self._save_lambda = save_lambda
         self._save_path = save_path
+        self._num_bo_iters = num_bo_iters
         self._iteration = 0
         self._inequality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
@@ -504,9 +506,11 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         print(f"Inequality Lambda: {self._inequality_lambda}")
         assert (batch_inequality_constraints_violated.shape == batch_equality_constraints_violated.shape)
         batch_constraints_violated = tf.logical_or(batch_inequality_constraints_violated, batch_equality_constraints_violated)
+        sum_batch_constraints_violated = tf.reduce_sum(tf.cast(batch_constraints_violated, tf.float64))
+        print(f"Num Violated: {sum_batch_constraints_violated}")
         if not (equality_constraints_satisfied and inequality_constraints_satisfied):
-            # self._penalty = tf.where(batch_inequality_constraints_violated, self._penalty/2, self._penalty)
-            self._penalty = tf.where(batch_constraints_violated, self._penalty / 2, self._penalty)
+            self._penalty = tf.where(batch_constraints_violated, self._penalty / tf.pow(tf.constant(2, dtype=tf.float64), sum_batch_constraints_violated),
+                                                                 self._penalty)
             print(f"Not Satisfied. Updated Penalty: {self._penalty}")
         else:
             print(f"Satisfied")
@@ -521,7 +525,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                 self._inequality_lambda_tracker[k].append(v)
             self._penalty_tracker.append(self._penalty)
 
-            if self._iteration == 40:
+            if self._iteration == self._num_bo_iters:
                 with open(self._save_path + "_inequality_lambda_progression.pkl", "wb") as fp:
                     pickle.dump(self._inequality_lambda_tracker, fp)
 
