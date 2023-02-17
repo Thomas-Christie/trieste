@@ -14,6 +14,7 @@ import pickle
 
 NUM_INITIAL_SAMPLES = 5
 BATCH_SIZE = 3
+NUM_BO_ITERS = 14
 OBJECTIVE = "OBJECTIVE"
 INEQUALITY_CONSTRAINT_ONE = "INEQUALITY_CONSTRAINT_ONE"
 INEQUALITY_CONSTRAINT_TWO = "INEQUALITY_CONSTRAINT_TWO"
@@ -36,7 +37,6 @@ if __name__ == "__main__":
     initial_inputs = search_space.sample(NUM_INITIAL_SAMPLES)
     initial_data = observer(initial_inputs)
 
-    print(f"Initial Data: {initial_data}")
     constraint_one_satisfied = (tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations) <= 0)
     constraint_two_satisfied = (tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_TWO].observations) <= 0)
     all_satisfied = tf.logical_and(constraint_one_satisfied, constraint_two_satisfied)
@@ -59,25 +59,20 @@ if __name__ == "__main__":
             denominator = 2 * best_valid_objective
             initial_penalty = min_sum_squared / denominator
 
-    # invalid_ineq_one_squared = tf.square(tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations)[at_least_one_violated])
-    # invalid_ineq_two_squared = tf.square(tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_TWO].observations)[at_least_one_violated])
-    # sum_squared = invalid_ineq_one_squared + invalid_ineq_two_squared
-    # print(f"Min Sum: {tf.math.reduce_min(sum_squared)}")
-    # best_objective = tf.math.reduce_min(initial_data[OBJECTIVE].observations[all_satisfied])
-    # print(f"2 * Min: {2 * best_objective}")
-    # print(f"Initial Penalty: {tf.math.reduce_min(sum_squared) / (2 * best_objective)}")
-    print(f"Initial Penalty: {type(initial_penalty)}")
-    # initial_models = trieste.utils.map_values(create_model, initial_data)
+    print(f"Initial Penalty: {initial_penalty}")
+    initial_models = trieste.utils.map_values(create_model, initial_data)
 
     # inequality_lambda = tf.constant([[2.0], [2.0]], dtype=tf.float64)
-    # inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.Variable([[[1.0], [2.0], [3.0]]], dtype=tf.float64),
-    #                      INEQUALITY_CONSTRAINT_TWO: tf.Variable([[[0.0], [0.0], [0.0]]], dtype=tf.float64)}
-    # # initial_penalty = tf.Variable(0.5, dtype=tf.float64)
-    # initial_penalty = tf.Variable([[[8.0], [8.0], [8.0]]], dtype=tf.float64)
-    #
-    # augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", None, inequality_lambda, None,
-    #                                                                 BATCH_SIZE, initial_penalty, 0.001, search_space, False)
-    #
-    # rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(), num_query_points=BATCH_SIZE)
-    # bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
-    # data = bo.optimize(14, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
+    inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.Variable([[[0.0], [1.0], [2.0]]], dtype=tf.float64),
+                         INEQUALITY_CONSTRAINT_TWO: tf.Variable([[[0.0], [0.0], [0.0]]], dtype=tf.float64)}
+    initial_penalty = tf.Variable([[[initial_penalty], [initial_penalty], [initial_penalty]]], dtype=tf.float64)
+
+    # save_path = f"../results/16-02-23/fixed_accurate_lambda_first_15/run_{run}"
+    augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", None, inequality_lambda, None,
+                                                                    BATCH_SIZE, initial_penalty, 0.001, search_space, False)
+
+    rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(), num_query_points=BATCH_SIZE)
+    bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
+    data = bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
+    # with open(f"../results/16-02-23/fixed_accurate_lambda_first_15/run_{run}_data.pkl", "wb") as fp:
+    #     pickle.dump(data, fp)

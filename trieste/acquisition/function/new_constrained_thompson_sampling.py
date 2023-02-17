@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Mapping, Optional, cast
 
 import numpy as np
@@ -384,6 +385,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._iteration = 0
         self._inequality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
+        self._previous_iteration_models = None
 
         for k, v in self._inequality_lambda.items():
             self._inequality_lambda_tracker[k] = [v]
@@ -409,6 +411,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         """
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
+
+        self._previous_iteration_models = copy.deepcopy(models)
 
         self._objective_trajectory_sampler = models[self._objective_tag].trajectory_sampler()
         self._objective_trajectory = self._objective_trajectory_sampler.get_trajectory()
@@ -464,6 +468,17 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         # Last "batch_size" points in dataset are most recent estimates of optimal x value
         opt_x = datasets[self._objective_tag].query_points[-self._batch_size:][None, ...]
         tf.debugging.assert_shapes([(opt_x, (1, None, None))])
+
+        # prev_model_prediction = self._previous_iteration_models['INEQUALITY_CONSTRAINT_ONE'].predict_y(opt_x)
+        # actual_value = datasets['INEQUALITY_CONSTRAINT_ONE'].observations[-self._batch_size]
+        # print(f"Previous Model Prediction: {prev_model_prediction}")
+        # print(f"Model Prediction: {models['INEQUALITY_CONSTRAINT_ONE'].predict_y(opt_x)}")
+        # print(f"Actual Value: {actual_value}")
+        # constraint_one_dist = tfp.distributions.Normal(loc=prev_model_prediction[0], scale=tf.sqrt(prev_model_prediction[1]))
+        # scaling_coefficient = 1 - min(abs(actual_value - constraint_one_dist.loc)/(2 * constraint_one_dist.scale), 1)
+        # print(f"Scaling Coefficient = {scaling_coefficient}")
+        # print(f"PDF at observed value: {constraint_one_dist.prob(datasets['INEQUALITY_CONSTRAINT_ONE'].observations[-self._batch_size])}")
+        # self._previous_iteration_models = copy.deepcopy(models)
 
         inequality_constraints_satisfied = True
         equality_constraints_satisfied = True
@@ -543,6 +558,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             old_trajectory = self._equality_constraint_trajectories[tag]
             updated_trajectory = sampler.update_trajectory(old_trajectory)
             self._equality_constraint_trajectories[tag] = updated_trajectory
+
+        self._previous_iteration_models = copy.deepcopy(models)
 
         self._augmented_lagrangian_fn = self._augmented_lagrangian
 

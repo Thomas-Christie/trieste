@@ -1,0 +1,1 @@
+Fixed lambda = [0.9, 0.0] (i.e. close to true values) in order to see if this increased convergence time.
