@@ -345,6 +345,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         penalty: tf.Tensor = 1,
         epsilon: float = 0.001,
         search_space: Optional[SearchSpace] = None,
+        plot: bool = False,
         save_lambda = False,
         save_path: str = None,
         num_bo_iters: int = None,
@@ -379,16 +380,23 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._epsilon = epsilon
         self._search_space = search_space
         self._augmented_lagrangian_fn = None
+        self._plot = plot
         self._save_lambda = save_lambda
         self._save_path = save_path
         self._num_bo_iters = num_bo_iters
         self._iteration = 0
         self._inequality_lambda_tracker = {}
+        self._equality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
         self._previous_iteration_models = None
 
-        for k, v in self._inequality_lambda.items():
-            self._inequality_lambda_tracker[k] = [v]
+        if self._inequality_lambda is not None:
+            for k, v in self._inequality_lambda.items():
+                self._inequality_lambda_tracker[k] = [v]
+
+        if self._equality_lambda is not None:
+            for k, v in self._equality_lambda.items():
+                self._equality_lambda_tracker[k] = [v]
 
     def __repr__(self) -> str:
         """"""
@@ -527,13 +535,25 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
 
         if self._save_lambda:
             # Store inequality lambda values if we're wanting to save lambda values
-            for k, v in self._inequality_lambda.items():
-                self._inequality_lambda_tracker[k].append(v)
+            if self._inequality_lambda is not None:
+                for k, v in self._inequality_lambda.items():
+                    self._inequality_lambda_tracker[k].append(v)
+
+            # Store equality lambda values if we're wanting to save lambda values
+            if self._equality_lambda is not None:
+                for k, v in self._equality_lambda.items():
+                    self._equality_lambda_tracker[k].append(v)
+
             self._penalty_tracker.append(self._penalty)
 
             if self._iteration == self._num_bo_iters:
-                with open(self._save_path + "_inequality_lambda_progression.pkl", "wb") as fp:
-                    pickle.dump(self._inequality_lambda_tracker, fp)
+                if self._inequality_lambda is not None:
+                    with open(self._save_path + "_inequality_lambda_progression.pkl", "wb") as fp:
+                        pickle.dump(self._inequality_lambda_tracker, fp)
+
+                if self._equality_lambda is not None:
+                    with open(self._save_path + "_equality_lambda_progression.pkl", "wb") as fp:
+                        pickle.dump(self._equality_lambda_tracker, fp)
 
                 with open(self._save_path + "_penalty_progression.pkl", "wb") as fp:
                     pickle.dump(self._penalty_tracker, fp)
@@ -551,6 +571,9 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             self._equality_constraint_trajectories[tag] = updated_trajectory
 
         self._previous_iteration_models = copy.deepcopy(models)
+
+        if self._plot:
+            self._plot_models(opt_objective_x)
 
         self._augmented_lagrangian_fn = self._augmented_lagrangian
 
@@ -617,3 +640,45 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         slack_vals_non_neg = tf.nn.relu(slack_vals)
         tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])
         return slack_vals_non_neg
+
+    def _plot_models(self, prev_query_point):
+        """
+        Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
+        Lagrangian.
+        """
+        x_list = tf.linspace(0, 1, 500)
+        y_list = tf.linspace(0, 1, 500)
+        xs, ys = tf.meshgrid(x_list, y_list)
+        coordinates = tf.expand_dims(tf.stack((tf.reshape(xs, [-1]), tf.reshape(ys, [-1])), axis=1), -2)
+        objective_pred = self._objective_trajectory(coordinates)
+        lagrangian_pred = - self._augmented_lagrangian(coordinates)
+        num_cols = max(len(self._equality_constraint_trajectories), len(self._inequality_constraint_trajectories), 3)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, num_cols, figsize=(15, 7))
+        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        fig.colorbar(objective_plot)
+        ax1[0].set_xlabel("OBJECTIVE")
+
+        i = 0
+        for tag, trajectory in self._inequality_constraint_trajectories.items():
+            inequality_trajectory_pred = trajectory(coordinates)
+            inequality_plot = ax2[i].contourf(xs, ys, tf.reshape(inequality_trajectory_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+            ax2[i].set_xlabel(tag)
+            fig.colorbar(inequality_plot)
+            i += 1
+
+        i = 0
+        for tag, trajectory in self._equality_constraint_trajectories.items():
+            equality_trajectory_pred = trajectory(coordinates)
+            equality_plot = ax3[i].contourf(xs, ys, tf.reshape(equality_trajectory_pred,[y_list.shape[0], x_list.shape[0]]), levels=500)
+            ax3[i].set_xlabel(tag)
+            fig.colorbar(equality_plot)
+            i += 1
+
+        clipped_lagrangian_plot = ax1[1].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=np.linspace(-3, 3, 500), extend="both")
+        fig.colorbar(clipped_lagrangian_plot)
+        ax1[1].set_xlabel("AUGMENTED_LAGRANGIAN (CLIPPED)")
+        lagrangian_plot = ax1[2].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        fig.colorbar(lagrangian_plot)
+        ax1[2].set_xlabel("AUGMENTED_LAGRANGIAN (UNCLIPPED)")
+        plt.tight_layout()
+        plt.show()
