@@ -6,6 +6,7 @@ from typing import Mapping, Optional, cast
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from matplotlib import ticker
 import pickle
 
 from ...data import Dataset
@@ -674,11 +675,20 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             fig.colorbar(equality_plot)
             i += 1
 
-        clipped_lagrangian_plot = ax1[1].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=np.linspace(-3, 3, 500), extend="both")
+        clipped_lagrangian_plot = ax1[1].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), locator=ticker.SymmetricalLogLocator(base=10, linthresh=1))
+        ax1[1].set_yscale('symlog')
         fig.colorbar(clipped_lagrangian_plot)
-        ax1[1].set_xlabel("AUGMENTED_LAGRANGIAN (CLIPPED)")
+        ax1[1].set_xlabel("AUGMENTED_LAGRANGIAN (SYMLOG SCALE)")
         lagrangian_plot = ax1[2].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
         fig.colorbar(lagrangian_plot)
         ax1[2].set_xlabel("AUGMENTED_LAGRANGIAN (UNCLIPPED)")
+        ax2[1].text(0.5, 0.5, f"Iteration: {self._iteration} \n Previous Query: {prev_query_point}",
+                    horizontalalignment='center', verticalalignment='center')
+        ax2[1].axis("off")
+        ax2[2].axis("off")
+        ax2[2].axis("off")
+        ax3[2].axis("off")
         plt.tight_layout()
+        # with open(f"../results/22-02-23/visualisation/iter_{self._iteration}.png", "wb") as fp:
+        #     plt.savefig(fp)
         plt.show()
