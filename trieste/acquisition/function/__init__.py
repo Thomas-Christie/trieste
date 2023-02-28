@@ -67,4 +67,5 @@ from .multi_objective import (
 )
 from .old_constrained_thompson_sampling import OldThompsonSamplingAugmentedLagrangian
 from .new_constrained_thompson_sampling import ThompsonSamplingAugmentedLagrangian, BatchThompsonSamplingAugmentedLagrangian
+from .kkt_expected_improvement import KKTExpectedImprovement
 from .utils import MultivariateNormalCDF
