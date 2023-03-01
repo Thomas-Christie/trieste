@@ -76,6 +76,7 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
         """
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
+        print(f"Iteration: {self._iteration}")
 
         # Find the best valid objective value seen so far
         satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
@@ -120,6 +121,7 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
         """
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
+        print(f"Iteration: {self._iteration}")
         datasets = cast(Mapping[Tag, Dataset], datasets)
 
         objective_dataset = datasets[self._objective_tag]
@@ -180,6 +182,7 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
         expected_improvement = (self._best_valid_observation - mean) * normal.cdf(self._best_valid_observation) + variance * normal.prob(self._best_valid_observation)
         num_x_vals = x.shape[0]
         cosine_similarities = []
+        print('Starting Optimisation')
         for i in range(num_x_vals):
             inequality_grad_dict = {}
             equality_grad_dict = {}
@@ -198,16 +201,22 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
                 with tf.GradientTape(persistent=True) as tape:
                     tape.watch(x_val)
                     constraint_pred_mean, constraint_pred_var = model.predict(x_val)
-                constraint_grad = tape.gradient(constraint_pred_mean, x_val)
-                inequality_grad_dict[tag] = constraint_grad
+                    binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= 1.2816
+                # Only consider binding constraints
+                if binding:
+                    constraint_grad = tape.gradient(constraint_pred_mean, x_val)
+                    inequality_grad_dict[tag] = constraint_grad
 
             # Calculate equality constraint gradients
             for tag, model in self._equality_constraint_models.items():
                 with tf.GradientTape(persistent=True) as tape:
                     tape.watch(x_val)
                     constraint_pred_mean, constraint_pred_var = model.predict(x_val)
-                constraint_grad = tape.gradient(constraint_pred_mean, x_val)
-                equality_grad_dict[tag] = constraint_grad
+                    # TODO: Change hard-coding of constant below
+                    binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= 1.2816
+                if binding:
+                    constraint_grad = tape.gradient(constraint_pred_mean, x_val)
+                    inequality_grad_dict[tag] = constraint_grad
 
             # Construct gradient matrix
             gradient_matrix = None
@@ -222,18 +231,20 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
                     gradient_matrix = tf.transpose(gradient)
                 else:
                     gradient_matrix = tf.concat((gradient_matrix, tf.transpose(gradient)), axis=1)
-            tf.debugging.assert_shapes([(gradient_matrix, [2, None])])
 
-            # TODO: Enforce non-negativity of inequality constraint Lagrange multipliers?
-            lagrange_multipliers = tf.linalg.inv(tf.matmul(gradient_matrix, gradient_matrix, transpose_a=True)) @ tf.transpose(gradient_matrix) @ (-mle_objective_grad)
-            ls_objective_grad = tf.matmul(gradient_matrix, lagrange_multipliers)
-            normalized_mle_objective_grad, _ = tf.linalg.normalize(mle_objective_grad, axis=0)
-            normalized_ls_objective_grad, _ = tf.linalg.normalize(ls_objective_grad, axis=0)
-            print(f'LS Objective Grad Shape: {normalized_ls_objective_grad.shape}')
-            print(f'MLE Objective Grad Shape: {normalized_mle_objective_grad.shape}')
-            cosine_similarity = tf.reduce_sum(tf.multiply(normalized_mle_objective_grad, normalized_ls_objective_grad))
-            cosine_similarities.append(cosine_similarity)
+            if gradient_matrix is None:
+                # No constraints are considered binding, so unlikely to be optimal point
+                cosine_similarities.append(0)
+            else:
+                # TODO: Should we enforce non-negativity of inequality constraint Lagrange multipliers?
+                lagrange_multipliers = tf.linalg.inv(tf.matmul(gradient_matrix, gradient_matrix, transpose_a=True)) @ tf.transpose(gradient_matrix) @ (-mle_objective_grad)
+                lagrange_multipliers = tf.nn.relu(lagrange_multipliers)
+                ls_objective_grad = - tf.matmul(gradient_matrix, lagrange_multipliers)
+                normalized_mle_objective_grad = tf.math.l2_normalize(mle_objective_grad, axis=0)
+                normalized_ls_objective_grad = tf.math.l2_normalize(ls_objective_grad, axis=0)
+                cosine_similarity = tf.reduce_sum(tf.multiply(normalized_mle_objective_grad, normalized_ls_objective_grad))
+                cosine_similarities.append(cosine_similarity)
 
-        cosine_similarities = tf.convert_to_tensor(cosine_similarities)
+        cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
         assert (expected_improvement.shape == cosine_similarities.shape)
         return tf.multiply(cosine_similarities, expected_improvement)
