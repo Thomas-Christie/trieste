@@ -7,9 +7,9 @@ from trieste.space import Box
 from functions import constraints
 from functions import objectives
 
-NUM_INITIAL_SAMPLES = 10
+NUM_INITIAL_SAMPLES = 6
 BATCH_SIZE = 1
-NUM_BO_ITERS = 40
+NUM_BO_ITERS = 20
 OBJECTIVE = "OBJECTIVE"
 INEQUALITY_CONSTRAINT_ONE = "INEQUALITY_CONSTRAINT_ONE"
 INEQUALITY_CONSTRAINT_TWO = "INEQUALITY_CONSTRAINT_TWO"
@@ -40,3 +40,5 @@ if __name__ == "__main__":
     rule = EfficientGlobalOptimization(kkt_expected_improvement, optimizer=generate_continuous_optimizer())
     bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
     data = bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
+    # with open(f"../results/03-03-23/kkt_6_initial_samples/run_{run}_data.pkl", "wb") as fp:
+    #     pickle.dump(data, fp)

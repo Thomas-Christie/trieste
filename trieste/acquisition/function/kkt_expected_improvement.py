@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
+import os
 from typing import Mapping, Optional, cast
-
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import tensorflow_probability as tfp
 
@@ -97,13 +99,13 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
 
         for tag, model in models.items():
             if tag.startswith(self._objective_tag):
-                self._objective_model = model
+                self._objective_model = copy.deepcopy(model)
             elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
-                self._equality_constraint_models[tag] = model
+                self._equality_constraint_models[tag] = copy.deepcopy(model)
             elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
-                self._inequality_constraint_models[tag] = model
+                self._inequality_constraint_models[tag] = copy.deepcopy(model)
 
-        self._kkt_expected_improvement_fn = self._kkt_expected_improvement
+        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
 
         return self._kkt_expected_improvement_fn
 
@@ -152,16 +154,20 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
         if all_constraints_satisfied:
             self._best_valid_observation = min(self._best_valid_observation, most_recent_observation)
 
+        # Plot Models
+        self._plot_models(most_recent_query_point)
+
         # Update models
+        # TODO: Currently using deepcopy for producing consistent plots, may remove in future
         for tag, model in models.items():
             if tag.startswith(self._objective_tag):
-                self._objective_model = model
+                self._objective_model = copy.deepcopy(model)
             elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
-                self._equality_constraint_models[tag] = model
+                self._equality_constraint_models[tag] = copy.deepcopy(model)
             elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
-                self._inequality_constraint_models[tag] = model
+                self._inequality_constraint_models[tag] = copy.deepcopy(model)
 
-        self._kkt_expected_improvement_fn = self._kkt_expected_improvement
+        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
 
         return self._kkt_expected_improvement_fn
 
@@ -216,7 +222,7 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
                     binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= 1.2816
                 if binding:
                     constraint_grad = tape.gradient(constraint_pred_mean, x_val)
-                    inequality_grad_dict[tag] = constraint_grad
+                    equality_grad_dict[tag] = constraint_grad
 
             # Construct gradient matrix
             gradient_matrix = None
@@ -248,3 +254,122 @@ class KKTExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType])
         cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
         assert (expected_improvement.shape == cosine_similarities.shape)
         return tf.multiply(cosine_similarities, expected_improvement)
+
+    def _efficient_kkt_expected_improvement(self,
+                                  x: tf.Tensor) -> tf.Tensor:
+        """
+        Form KKT expected improvement from objective and constraints
+        :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, M]
+        """
+        tf.debugging.assert_shapes(
+            [(x, [..., 1, None])],
+            message="This acquisition function only supports batch sizes of one.",
+        )
+        x = tf.squeeze(x, -2)
+
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch(x)
+            objective_mean, objective_var = self._objective_model.predict(x)
+        mle_objective_grad = tape.gradient(objective_mean, x)
+        tf.debugging.assert_shapes([(mle_objective_grad, [..., 2])])
+        normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
+
+        # TODO: Double check expected improvement definition
+        expected_improvement = (self._best_valid_observation - objective_mean) * normal.cdf(self._best_valid_observation) + objective_var * normal.prob(self._best_valid_observation)
+        num_x_vals = x.shape[0]
+        cosine_similarities = []
+
+        inequality_constraint_grad_dict = {}
+        inequality_constraint_bind_dict = {}
+        for tag, model in self._inequality_constraint_models.items():
+            with tf.GradientTape(persistent=True) as tape:
+                tape.watch(x)
+                constraint_pred_mean, constraint_pred_var = model.predict(x)
+            binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= 1.2816
+            constraint_grad = tape.gradient(constraint_pred_mean, x)
+            inequality_constraint_grad_dict[tag] = constraint_grad
+            inequality_constraint_bind_dict[tag] = binding
+
+        for i in range(num_x_vals):
+            point_inequality_grad_dict = {}
+            point_mle_objective_grad = mle_objective_grad[i][..., None]
+
+            # Calculate inequality constraint gradients
+            for tag, _ in self._inequality_constraint_models.items():
+                binding = inequality_constraint_bind_dict[tag][i]
+                # Only consider binding constraints
+                if binding:
+                    point_constraint_grad = inequality_constraint_grad_dict[tag][i]
+                    point_inequality_grad_dict[tag] = point_constraint_grad
+
+            # Construct gradient matrix
+            gradient_matrix = None
+
+            for tag, gradient in point_inequality_grad_dict.items():
+                if gradient_matrix is None:
+                    gradient_matrix = gradient[..., None]
+                else:
+                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
+
+            if gradient_matrix is None:
+                # No constraints are considered binding, so unlikely to be optimal point
+                cosine_similarities.append(0)
+            else:
+                # TODO: Should we enforce non-negativity of inequality constraint Lagrange multipliers? Currently we are
+                lagrange_multipliers = tf.linalg.inv(tf.matmul(gradient_matrix, gradient_matrix, transpose_a=True)) @ tf.transpose(gradient_matrix) @ (-point_mle_objective_grad)
+                lagrange_multipliers = tf.nn.relu(lagrange_multipliers)
+                ls_objective_grad = - tf.matmul(gradient_matrix, lagrange_multipliers)
+                normalized_mle_objective_grad = tf.math.l2_normalize(point_mle_objective_grad, axis=0)
+                normalized_ls_objective_grad = tf.math.l2_normalize(ls_objective_grad, axis=0)
+                cosine_similarity = tf.reduce_sum(tf.multiply(normalized_mle_objective_grad, normalized_ls_objective_grad))
+                cosine_similarities.append(cosine_similarity)
+
+        cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
+        assert (expected_improvement.shape == cosine_similarities.shape)
+        return tf.multiply(cosine_similarities, expected_improvement)
+
+    def _plot_models(self, prev_query_point):
+        """
+        Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
+        Lagrangian.
+        """
+        print(f"Prev Query: {prev_query_point}")
+        x_list = tf.linspace(0, 1, 100)
+        y_list = tf.linspace(0, 1, 100)
+        xs, ys = tf.meshgrid(x_list, y_list)
+        coordinates = tf.expand_dims(tf.stack((tf.reshape(xs, [-1]), tf.reshape(ys, [-1])), axis=1), -2)
+        objective_pred, _ = self._objective_model.predict(coordinates)
+        kkt_ei_pred = self._efficient_kkt_expected_improvement(coordinates)
+        fig, (ax1, ax2) = plt.subplots(2, 3, figsize=(15, 7))
+        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        ax1[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        fig.colorbar(objective_plot)
+        ax1[0].set_xlabel("OBJECTIVE")
+
+        constraint_one_pred, _ = self._inequality_constraint_models["INEQUALITY_CONSTRAINT_ONE"].predict(coordinates)
+        constraint_one_plot = ax1[1].contourf(xs, ys, tf.reshape(constraint_one_pred, [y_list.shape[0], x_list.shape[0]]),
+                                              levels=500)
+        ax1[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        fig.colorbar(constraint_one_plot)
+        ax1[1].set_xlabel("INEQUALITY CONSTRAINT ONE")
+
+        constraint_two_pred, _ = self._inequality_constraint_models["INEQUALITY_CONSTRAINT_TWO"].predict(coordinates)
+        constraint_two_plot = ax1[2].contourf(xs, ys, tf.reshape(constraint_two_pred, [y_list.shape[0], x_list.shape[0]]),
+                                              levels=500)
+        ax1[2].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        fig.colorbar(constraint_two_plot)
+        ax1[2].set_xlabel("INEQUALITY CONSTRAINT TWO")
+
+        kkt_plot = ax2[0].contourf(xs, ys, tf.reshape(kkt_ei_pred, [y_list.shape[0], x_list.shape[0]]), levels= 500, extend="both")
+        ax2[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        fig.colorbar(kkt_plot)
+        ax2[0].set_xlabel("KKT Expected Improvement)")
+        ax2[1].text(0.5, 0.5, f"Iteration: {self._iteration - 1} \n  Query: {prev_query_point} \n Best Valid Observation: {self._best_valid_observation}",
+                    horizontalalignment='center', verticalalignment='center')
+        ax2[1].axis("off")
+        ax2[2].axis("off")
+        plt.tight_layout()
+        print(f"Curr Dir: {os.getcwd()}")
+        with open(f"../results/03-03-23/visualisation/run_two/iter_{self._iteration - 1}.png", "wb") as fp:
+            plt.savefig(fp)
+        plt.show()
