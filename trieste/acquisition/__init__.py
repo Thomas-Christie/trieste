@@ -85,6 +85,7 @@ from .function import (
 )
 from .interface import (
     AcquisitionFunction,
+    KKTAcquisitionFunctionBuilder,
     AcquisitionFunctionBuilder,
     AcquisitionFunctionClass,
     GreedyAcquisitionFunctionBuilder,

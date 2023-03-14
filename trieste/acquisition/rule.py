@@ -51,6 +51,7 @@ from .function import (
 from .interface import (
     AcquisitionFunction,
     AcquisitionFunctionBuilder,
+    KKTAcquisitionFunctionBuilder,
     GreedyAcquisitionFunctionBuilder,
     SingleModelAcquisitionBuilder,
     SingleModelGreedyAcquisitionBuilder,
@@ -334,6 +335,173 @@ class EfficientGlobalOptimization(
                             )
 
         return points
+
+
+class KKTEfficientGlobalOptimization(
+    AcquisitionRule[TensorType, SearchSpaceType, ProbabilisticModelType]
+):
+    """Implements the Efficient Global Optimization, or EGO, algorithm, adapted
+       for the KKT method of constrained Bayesian optimization as found in
+       https://pure.uvt.nl/ws/portalfiles/portal/63795955/2022_022.pdf"""
+
+    @overload
+    def __init__(
+        self: "KKTEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModel]",
+        builder: KKTAcquisitionFunctionBuilder[ProbabilisticModelType],
+        optimizer: AcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+        epsilon: float = 0.001
+    ):
+        ...
+
+    @overload
+    def __init__(
+        self: "KKTEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModelType]",
+        builder: KKTAcquisitionFunctionBuilder[ProbabilisticModelType],
+        optimizer: AcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+        epsilon: float = 0.001
+    ):
+        ...
+
+    def __init__(
+        self,
+        builder: KKTAcquisitionFunctionBuilder[ProbabilisticModelType],
+        optimizer: AcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+        epsilon: float = 0.001
+    ):
+        """
+        :param builder: The acquisition function builder to use. Defaults to
+            :class:`~trieste.acquisition.ExpectedImprovement`.
+        :param optimizer: The optimizer with which to optimize the acquisition function built by
+            ``builder``. This should *maximize* the acquisition function, and must be compatible
+            with the global search space. Defaults to
+            :func:`~trieste.acquisition.optimizer.automatic_optimizer_selector`.
+        :param num_query_points: The number of points to acquire.
+        :param initial_acquisition_function: The initial acquisition function to use. Defaults
+            to using the builder to construct one, but passing in a previously constructed
+            function can occasionally be useful (e.g. to preserve random seeds).
+        :param epsilon: Fraction of improvement over current best value required to utilise point returned from acquisition
+                        function as input to expenisive black-box functions.
+        """
+
+        if num_query_points <= 0:
+            raise ValueError(
+                f"Number of query points must be greater than 0, got {num_query_points}"
+            )
+
+        if optimizer is None:
+            optimizer = automatic_optimizer_selector
+
+        if num_query_points > 1:  # need to build batches of points
+            if isinstance(builder, VectorizedAcquisitionFunctionBuilder):
+                # optimize batch elements independently
+                optimizer = batchify_vectorize(optimizer, num_query_points)
+            elif isinstance(builder, AcquisitionFunctionBuilder) or isinstance(builder, KKTAcquisitionFunctionBuilder):
+                # optimize batch elements jointly
+                optimizer = batchify_joint(optimizer, num_query_points)
+            elif isinstance(builder, GreedyAcquisitionFunctionBuilder):
+                # optimize batch elements sequentially using the logic in acquire.
+                pass
+
+        self._builder: KKTAcquisitionFunctionBuilder = builder
+        self._optimizer = optimizer
+        self._num_query_points = num_query_points
+        self._acquisition_function: Optional[AcquisitionFunction] = initial_acquisition_function
+        self._epsilon = epsilon
+
+    def __repr__(self) -> str:
+        """"""
+        return f"""KKTEfficientGlobalOptimization(
+        {self._builder!r},
+        {self._optimizer!r},
+        {self._num_query_points!r})"""
+
+    @property
+    def acquisition_function(self) -> Optional[AcquisitionFunction]:
+        """The current acquisition function, updated last time :meth:`acquire` was called."""
+        return self._acquisition_function
+
+    def acquire(
+        self,
+        search_space: SearchSpaceType,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+        initial_alpha: float = 0.20,
+        alpha_lower_bound: float = 0.01
+    ) -> (TensorType, bool):
+        """
+        Return the query point(s) that optimizes the acquisition function produced by ``builder``
+        (see :meth:`__init__`).
+
+        :param search_space: The local acquisition search space for *this step*.
+        :param models: The model for each tag.
+        :param datasets: The known observer query points and observations. Whether this is required
+            depends on the acquisition function used.
+        :param initial_alpha: Initial probability used for calculating z-values as part of KKT EI.
+        :param alpha_lower_bound: Lower bound on probability used for calculating z-values as part of KKT EI.
+        :return: The single (or batch of) points to query.
+        """
+        alpha = initial_alpha
+
+        summary_writer = logging.get_tensorboard_writer()
+        step_number = logging.get_step_number()
+        greedy = isinstance(self._builder, GreedyAcquisitionFunctionBuilder)
+
+        sufficient_improvement = False
+        stop = False
+        while not sufficient_improvement and alpha > alpha_lower_bound:
+            if self._acquisition_function is None:
+                self._acquisition_function = self._builder.prepare_acquisition_function(
+                    models,
+                    datasets=datasets,
+                    alpha=alpha
+                )
+            else:
+                self._acquisition_function = self._builder.update_acquisition_function(
+                    self._acquisition_function,
+                    models,
+                    datasets=datasets,
+                    alpha=alpha
+                )
+            with tf.name_scope("EGO.optimizer" + "[0]" * greedy):
+                # In the case of KKT EI optimisation should only return 1 point
+                points = self._optimizer(search_space, self._acquisition_function)
+                assert (points.shape[0] == 1)
+                expected_improvement = self._builder.get_expected_improvement(points)
+                print(f"Expected Improvement (Outer Loop): {expected_improvement}")
+                if expected_improvement > self._epsilon * self._builder.best_valid_observation:
+                    sufficient_improvement = True
+                else:
+                    # If EI is low, relax constraint binding z-value
+                    alpha = alpha / 2
+                    print(f"Reducing Alpha - New Value = {alpha}")
+
+        if not sufficient_improvement:
+            stop = True
+            # Estimate final optimum by optimising output of objective model directly, subject to constraint
+            # that upper bounds of 90% confidence intervals on the inequality constraint estimates need to be negative
+            satisfied_objective_values_fn = self._builder.get_satisfied_objective_values
+            points = self._optimizer(search_space, satisfied_objective_values_fn)
+
+        if summary_writer:
+            with summary_writer.as_default(step=step_number):
+                batched_points = tf.expand_dims(points, axis=0)
+                values = self._acquisition_function(batched_points)[0]
+                if len(values) == 1:
+                    logging.scalar(
+                        "KKTEGO.acquisition_function/maximum_found" + "[0]" * greedy, values[0]
+                    )
+                else:  # vectorized acquisition function
+                    logging.histogram(
+                        "KKTEGO.acquisition_function/maximum_found" + "[0]" * greedy, values
+                    )
+
+        return points, stop
 
 
 @dataclass(frozen=True)

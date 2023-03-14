@@ -29,6 +29,7 @@ from . import (
     acquisition,
     ask_tell_optimization,
     bayesian_optimizer,
+    kkt_bayesian_optimizer,
     data,
     models,
     objectives,

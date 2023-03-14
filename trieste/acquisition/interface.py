@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Callable, Generic, Mapping, Optional
+import tensorflow as tf
 
 from ..data import Dataset
 from ..models.interfaces import ProbabilisticModelType
@@ -85,6 +86,60 @@ class AcquisitionFunctionBuilder(Generic[ProbabilisticModelType], ABC):
         :return: The updated acquisition function.
         """
         return self.prepare_acquisition_function(models, datasets=datasets)
+
+
+class KKTAcquisitionFunctionBuilder(Generic[ProbabilisticModelType], ABC):
+    """A :class:`KKTAcquisitionFunctionBuilder` builds and updates the KKT acquisition function."""
+
+    def __init__(self):
+        self.best_valid_observation = None
+    @abstractmethod
+    def prepare_acquisition_function(
+        self,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+        alpha: float = 0.20
+    ) -> AcquisitionFunction:
+        """
+        Prepare KKT acquisition function. We assume that this requires at least models, but
+        it may sometimes also need data. Also uses alpha, which is used for calculating
+        z-values for testing which constraints are binding.
+
+        :param models: The models for each tag.
+        :param datasets: The data from the observer (optional).
+        :param alpha: Probability used for calculating z-values in KKT
+        :return: An acquisition function.
+        """
+
+    def update_acquisition_function(
+        self,
+        function: AcquisitionFunction,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+        alpha: float = 0.20
+    ) -> AcquisitionFunction:
+        """
+        Update KKT acquisition function. By default this generates a new acquisition function each
+        time. However, if the function is decorated with `@tf.function`, then you can override
+        this method to update its variables instead and avoid retracing the acquisition function on
+        every optimization loop.
+
+        :param function: The acquisition function to update.
+        :param models: The models for each tag.
+        :param datasets: The data from the observer (optional).
+        :param alpha: Probability used for calculating z-values in KKT
+        :return: The updated acquisition function.
+        """
+        return self.prepare_acquisition_function(models, datasets=datasets, alpha=alpha)
+
+    @abstractmethod
+    def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
+        """Get plain expected improvement"""
+
+    @abstractmethod
+    def get_satisfied_objective_values(self, x: tf.Tensor) -> tf.Tensor:
+        """Get expected improvement with constraint that upper bounds on t - 1 constraint estimates need to be negative"""
+
 
 
 class SingleModelAcquisitionBuilder(Generic[ProbabilisticModelType], ABC):
