@@ -639,7 +639,8 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
     #         plt.savefig(fp)
     #     plt.show()
 
-    # Used for plotting in '13-03-23/run_two' for testing out relaxation of constraint binding condition
+    # Used for plotting in '14-03-23/zoomed_in_cosine_similarities_two' for visualising cosine similarities close
+    # to optimal point in later iterations
     def _plot_models(self, prev_query_point):
         """
         Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
@@ -650,10 +651,18 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         y_list = tf.linspace(0, 1, 100)
         xs, ys = tf.meshgrid(x_list, y_list)
         coordinates = tf.expand_dims(tf.stack((tf.reshape(xs, [-1]), tf.reshape(ys, [-1])), axis=1), -2)
+
+        zoomed_x_list = tf.cast(tf.linspace(0.18, 0.22, 100), dtype=tf.float64)
+        zoomed_y_list = tf.cast(tf.linspace(0.38, 0.41, 100), dtype=tf.float64)
+        zoomed_xs, zoomed_ys = tf.meshgrid(zoomed_x_list, zoomed_y_list)
+        zoomed_coordinates = tf.expand_dims(tf.stack((tf.reshape(zoomed_xs, [-1]), tf.reshape(zoomed_ys, [-1])), axis=1), -2)
         kkt_ei_pred = self._efficient_kkt_expected_improvement(coordinates)
 
         cons_one_mean, cons_one_var = self._inequality_constraint_models["INEQUALITY_CONSTRAINT_ONE"].predict(coordinates)
-        cosine_similarities, expected_improvement = self._efficient_kkt_expected_improvement_separate(coordinates)
+        strict_cosine_similarities, expected_improvement = self._efficient_kkt_expected_improvement_separate(coordinates, alpha=0.2)
+        zoomed_strict_cosine_similarities, _ = self._efficient_kkt_expected_improvement_separate(zoomed_coordinates, alpha=0.2)
+        zoomed_relaxed_cosine_similarities, _ = self._efficient_kkt_expected_improvement_separate(zoomed_coordinates, alpha=0.1)
+        zoomed_very_relaxed_cosine_similarities, _ = self._efficient_kkt_expected_improvement_separate(zoomed_coordinates, alpha=0.02)
         fig, (ax1, ax2, ax3) = plt.subplots(3, 3, figsize=(15, 7))
 
         constraint_one_plot = ax1[0].contourf(xs, ys, tf.reshape(cons_one_mean, [y_list.shape[0], x_list.shape[0]]), levels=500)
@@ -678,12 +687,12 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         fig.colorbar(kkt_plot)
         ax2[0].set_xlabel("KKT Expected Improvement)")
 
-        cosine_plot = ax2[1].contourf(xs, ys, tf.reshape(cosine_similarities, [y_list.shape[0], x_list.shape[0]]), levels=500,
+        cosine_plot = ax2[1].contourf(xs, ys, tf.reshape(strict_cosine_similarities, [y_list.shape[0], x_list.shape[0]]), levels=500,
                                    extend="both")
         ax2[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
         ax2[1].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
         fig.colorbar(cosine_plot)
-        ax2[1].set_xlabel("Cosine Similarities")
+        ax2[1].set_xlabel(f"Cosine Similarities, Z-Score = {norm.ppf(1 - 0.2/2)}")
 
         ei_plot = ax2[2].contourf(xs, ys, tf.reshape(expected_improvement, [y_list.shape[0], x_list.shape[0]]),
                                       levels=500,
@@ -693,37 +702,28 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         fig.colorbar(ei_plot)
         ax2[2].set_xlabel("Expected Improvement")
 
-        cons_one_binding = tf.cast(tf.abs(cons_one_mean) / tf.sqrt(cons_one_var) <= norm.ppf(0.90), dtype=tf.int32)
-        cons_one_binding_plot = ax3[0].contourf(xs, ys,tf.reshape(cons_one_binding, [y_list.shape[0], x_list.shape[0]]),
+        zoomed_strict_cosine_plot = ax3[0].contourf(zoomed_xs, zoomed_ys, tf.reshape(zoomed_strict_cosine_similarities, [zoomed_y_list.shape[0], zoomed_x_list.shape[0]]),
                                             levels=500,
                                             extend="both")
-        ax3[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
         ax3[0].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
-        fig.colorbar(cons_one_binding_plot)
-        ax3[0].set_xlabel(f"Constraint One Binding, Z-Score = {norm.ppf(0.90)}")
+        fig.colorbar(zoomed_strict_cosine_plot)
+        ax3[0].set_xlabel(f"Zoomed Cosine Similarities, Z-Score = {norm.ppf(0.90)}")
 
-        cons_one_binding_relaxed = tf.cast(tf.abs(cons_one_mean) / tf.sqrt(cons_one_var) <= norm.ppf(0.95), dtype=tf.int32)
-        cons_one_binding_relaxed_plot = ax3[1].contourf(xs, ys,
-                                                tf.reshape(cons_one_binding_relaxed, [y_list.shape[0], x_list.shape[0]]),
-                                                levels=500,
-                                                extend="both")
-        ax3[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        zoomed_relaxed_cosine_plot = ax3[1].contourf(zoomed_xs, zoomed_ys, tf.reshape(zoomed_relaxed_cosine_similarities, [zoomed_y_list.shape[0], zoomed_x_list.shape[0]]),
+                                                     levels=500, extend="both")
         ax3[1].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
-        fig.colorbar(cons_one_binding_relaxed_plot)
-        ax3[1].set_xlabel(f"Constraint One Binding, Z-Score = {norm.ppf(0.95)}")
+        fig.colorbar(zoomed_relaxed_cosine_plot)
+        ax3[1].set_xlabel(f"Zoomed Cosine Similarities, Z-Score = {norm.ppf(0.95)}")
 
-        cons_one_binding_very_relaxed = tf.cast(tf.abs(cons_one_mean) / tf.sqrt(cons_one_var) <= norm.ppf(0.99),
-                                           dtype=tf.int32)
-        cons_one_binding_very_relaxed_plot = ax3[2].contourf(xs, ys, tf.reshape(cons_one_binding_very_relaxed, [y_list.shape[0], x_list.shape[0]]),
-                                                        levels=500, extend="both")
-        ax3[2].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        zoomed_very_relaxed_cosine_plot = ax3[2].contourf(zoomed_xs, zoomed_ys, tf.reshape(zoomed_very_relaxed_cosine_similarities, [zoomed_y_list.shape[0], zoomed_x_list.shape[0]]),
+                                                     levels=500, extend="both")
         ax3[2].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
-        fig.colorbar(cons_one_binding_very_relaxed_plot)
-        ax3[2].set_xlabel(f"Constraint One Binding, Z-Score = {norm.ppf(0.99)}")
+        fig.colorbar(zoomed_very_relaxed_cosine_plot)
+        ax3[2].set_xlabel(f"Zoomed Cosine Similarities, Z-Score = {norm.ppf(0.99)}")
 
         ax1[2].axis("off")
 
         plt.tight_layout()
-        # with open(f"../results/13-03-23/run_two/visualisation/iter_{self._iteration - 1}.png", "wb") as fp:
-        #     plt.savefig(fp)
+        with open(f"../results/14-03-23/zoomed_in_cosine_similarities_two/visualisation/iter_{self._iteration - 1}.png", "wb") as fp:
+            plt.savefig(fp)
         plt.show()
