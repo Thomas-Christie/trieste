@@ -1,9 +1,8 @@
 import tensorflow as tf
 import trieste
-from trieste.acquisition.optimizer import generate_continuous_optimizer
-from trieste.acquisition.function.new_constrained_thompson_sampling import ThompsonSamplingAugmentedLagrangian, \
-    BatchThompsonSamplingAugmentedLagrangian
-from trieste.acquisition.rule import EfficientGlobalOptimization
+from trieste.acquisition.optimizer import generate_continuous_optimizer, generate_al_continuous_optimizer
+from trieste.acquisition.function.new_constrained_thompson_sampling import BatchThompsonSamplingAugmentedLagrangian
+from trieste.acquisition.rule import ALEfficientGlobalOptimization, EfficientGlobalOptimization
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 from trieste.space import Box
 from functions import constraints
@@ -48,8 +47,10 @@ if __name__ == "__main__":
                                                                         None, BATCH_SIZE, None, EPSILON, search_space,
                                                                         False, save_lambda=False, num_bo_iters=NUM_BO_ITERS)
 
-        rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(),
-                                           num_query_points=BATCH_SIZE)
+        # rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(),
+        #                                    num_query_points=BATCH_SIZE)
+        rule = ALEfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_al_continuous_optimizer(),
+                                             num_query_points=BATCH_SIZE)
         bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
         data = bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
         # with open(f"../results/30-03-23/lsq/data/run_{run}_data.pkl", "wb") as fp:
@@ -103,7 +104,8 @@ if __name__ == "__main__":
 #     equality_lambda = {EQUALITY_CONSTRAINT_ONE: tf.Variable([[[0.0]]], dtype=tf.float64),
 #                        EQUALITY_CONSTRAINT_TWO: tf.Variable([[[0.0]]], dtype=tf.float64)}
 #
-#     initial_penalty = tf.Variable([[[tf.abs(initial_penalty)]]], dtype=tf.float64)
+#     # initial_penalty = tf.Variable([[[tf.abs(initial_penalty)]]], dtype=tf.float64)
+#     initial_penalty = None
 #
 #     # save_path = f"../results/22-02-23/run_data/run_0"
 #     augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", "EQUALITY",

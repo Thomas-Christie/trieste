@@ -61,7 +61,10 @@ from .interface import (
 from .multi_objective import Pareto
 from .optimizer import (
     AcquisitionOptimizer,
+    ALAcquisitionOptimizer,
     automatic_optimizer_selector,
+    generate_al_continuous_optimizer,
+    al_batchify_vectorize,
     batchify_joint,
     batchify_vectorize,
 )
@@ -332,6 +335,206 @@ class EfficientGlobalOptimization(
                         else:  # vectorized acquisition function
                             logging.histogram(
                                 f"EGO.acquisition_function/maximum_found[{i+1}]", values
+                            )
+
+        return points
+
+
+# Added below so that we can force L-BFGS-B to use the most recently queried point as one of the starting points for
+# optimising, which will hopefully reduce number of optimisation failures.
+class ALEfficientGlobalOptimization(
+    AcquisitionRule[TensorType, SearchSpaceType, ProbabilisticModelType]
+):
+    """Implements the Efficient Global Optimization, or EGO, algorithm, adapted
+       for optimising the BatchThompsonSamplingAugmentedLagrangian acquisition function,
+       so that we can pass to the optimiser the most recently queried point for use as a starting
+       point for L-BFGS-B optimization."""
+
+    @overload
+    def __init__(
+        self: "ALEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModel]",
+        builder: None = None,
+        optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+    ):
+        ...
+
+    @overload
+    def __init__(
+        self: "ALEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModelType]",
+        builder: (
+            AcquisitionFunctionBuilder[ProbabilisticModelType]
+            | GreedyAcquisitionFunctionBuilder[ProbabilisticModelType]
+            | SingleModelAcquisitionBuilder[ProbabilisticModelType]
+            | SingleModelGreedyAcquisitionBuilder[ProbabilisticModelType]
+        ),
+        optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+    ):
+        ...
+
+    def __init__(
+        self,
+        builder: Optional[
+            AcquisitionFunctionBuilder[ProbabilisticModelType]
+            | GreedyAcquisitionFunctionBuilder[ProbabilisticModelType]
+            | VectorizedAcquisitionFunctionBuilder[ProbabilisticModelType]
+            | SingleModelAcquisitionBuilder[ProbabilisticModelType]
+            | SingleModelGreedyAcquisitionBuilder[ProbabilisticModelType]
+            | SingleModelVectorizedAcquisitionBuilder[ProbabilisticModelType]
+        ] = None,
+        optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
+        num_query_points: int = 1,
+        initial_acquisition_function: Optional[AcquisitionFunction] = None,
+    ):
+        """
+        :param builder: The acquisition function builder to use. Defaults to
+            :class:`~trieste.acquisition.ExpectedImprovement`.
+        :param optimizer: The optimizer with which to optimize the acquisition function built by
+            ``builder``. This should *maximize* the acquisition function, and must be compatible
+            with the global search space. Defaults to
+            :func:`~trieste.acquisition.optimizer.generate_al_continuous_optimiser`.
+        :param num_query_points: The number of points to acquire.
+        :param initial_acquisition_function: The initial acquisition function to use. Defaults
+            to using the builder to construct one, but passing in a previously constructed
+            function can occasionally be useful (e.g. to preserve random seeds).
+        """
+
+        if num_query_points <= 0:
+            raise ValueError(
+                f"Number of query points must be greater than 0, got {num_query_points}"
+            )
+
+        if builder is None:
+            if num_query_points == 1:
+                builder = ExpectedImprovement()
+            else:
+                raise ValueError(
+                    """Need to specify a batch acquisition function when number of query points
+                    is greater than 1"""
+                )
+
+        # TODO: Test out below code. Shouldn't be necessary.
+        if optimizer is None:
+            optimizer = generate_al_continuous_optimizer()
+
+        if isinstance(
+            builder,
+            (
+                SingleModelAcquisitionBuilder,
+                SingleModelGreedyAcquisitionBuilder,
+                SingleModelVectorizedAcquisitionBuilder,
+            ),
+        ):
+            builder = builder.using(OBJECTIVE)
+
+        if num_query_points > 1:  # need to build batches of points
+            if isinstance(builder, VectorizedAcquisitionFunctionBuilder):
+                # optimize batch elements independently
+                optimizer = al_batchify_vectorize(optimizer, num_query_points)
+            else:
+                # TODO: Raise error here? Currently we're only working with AL which is vectorizable
+                pass
+
+        self._builder: Union[
+            AcquisitionFunctionBuilder[ProbabilisticModelType],
+            GreedyAcquisitionFunctionBuilder[ProbabilisticModelType],
+            VectorizedAcquisitionFunctionBuilder[ProbabilisticModelType],
+        ] = builder
+        self._optimizer = optimizer
+        self._num_query_points = num_query_points
+        self._acquisition_function: Optional[AcquisitionFunction] = initial_acquisition_function
+
+    def __repr__(self) -> str:
+        """"""
+        return f"""ALEfficientGlobalOptimization(
+        {self._builder!r},
+        {self._optimizer!r},
+        {self._num_query_points!r})"""
+
+    @property
+    def acquisition_function(self) -> Optional[AcquisitionFunction]:
+        """The current acquisition function, updated last time :meth:`acquire` was called."""
+        return self._acquisition_function
+
+    def acquire(
+        self,
+        search_space: SearchSpaceType,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> TensorType:
+        """
+        Return the query point(s) that optimizes the acquisition function produced by ``builder``
+        (see :meth:`__init__`).
+
+        :param search_space: The local acquisition search space for *this step*.
+        :param models: The model for each tag.
+        :param datasets: The known observer query points and observations. Whether this is required
+            depends on the acquisition function used.
+        :return: The single (or batch of) points to query.
+        """
+        if self._acquisition_function is None:
+            self._acquisition_function = self._builder.prepare_acquisition_function(
+                models,
+                datasets=datasets,
+            )
+        else:
+            self._acquisition_function = self._builder.update_acquisition_function(
+                self._acquisition_function,
+                models,
+                datasets=datasets,
+            )
+
+        summary_writer = logging.get_tensorboard_writer()
+        step_number = logging.get_step_number()
+        greedy = isinstance(self._builder, GreedyAcquisitionFunctionBuilder)
+
+        dataset_keys = list(datasets.keys())
+        most_recent_query_point = datasets[dataset_keys[0]].query_points[-1][None, ...]
+        with tf.name_scope("ALEGO.optimizer" + "[0]" * greedy):
+            points = self._optimizer(search_space, self._acquisition_function, most_recent_query_point)
+
+        if summary_writer:
+            with summary_writer.as_default(step=step_number):
+                batched_points = tf.expand_dims(points, axis=0)
+                values = self._acquisition_function(batched_points)[0]
+                if len(values) == 1:
+                    logging.scalar(
+                        "ALEGO.acquisition_function/maximum_found" + "[0]" * greedy, values[0]
+                    )
+                else:  # vectorized acquisition function
+                    logging.histogram(
+                        "ALEGO.acquisition_function/maximum_found" + "[0]" * greedy, values
+                    )
+
+        if isinstance(self._builder, GreedyAcquisitionFunctionBuilder):
+            for i in range(
+                self._num_query_points - 1
+            ):  # greedily allocate remaining batch elements
+                self._acquisition_function = self._builder.update_acquisition_function(
+                    self._acquisition_function,
+                    models,
+                    datasets=datasets,
+                    pending_points=points,
+                    new_optimization_step=False,
+                )
+                with tf.name_scope(f"ALEGO.optimizer[{i+1}]"):
+                    chosen_point = self._optimizer(search_space, self._acquisition_function)
+                points = tf.concat([points, chosen_point], axis=0)
+
+                if summary_writer:
+                    with summary_writer.as_default(step=step_number):
+                        batched_points = tf.expand_dims(chosen_point, axis=0)
+                        values = self._acquisition_function(batched_points)[0]
+                        if len(values) == 1:
+                            logging.scalar(
+                                f"ALEGO.acquisition_function/maximum_found[{i + 1}]", values[0]
+                            )
+                        else:  # vectorized acquisition function
+                            logging.histogram(
+                                f"ALEGO.acquisition_function/maximum_found[{i+1}]", values
                             )
 
         return points
