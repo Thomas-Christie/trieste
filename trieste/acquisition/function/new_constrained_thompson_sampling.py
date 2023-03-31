@@ -5,6 +5,7 @@ from typing import Mapping, Optional, cast
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
 from matplotlib import ticker
 import pickle
@@ -20,6 +21,7 @@ from ..interface import (
     VectorizedAcquisitionFunctionBuilder
 )
 
+
 # Makes use of Lagrange multipliers easier to read, but less vectorised
 class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajectorySampler]):
     """
@@ -27,18 +29,18 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
     """
 
     def __init__(
-        self,
-        objective_tag: Tag,
-        inequality_constraint_prefix: Optional[Tag] = None,
-        equality_constraint_prefix: Optional[Tag] = None,
-        inequality_lambda: Optional[Mapping[Tag, tf.Variable]] = None,
-        equality_lambda: Optional[Mapping[Tag, tf.Variable]] = None,
-        penalty: tf.Variable = 1,
-        epsilon: float = 0.001,
-        search_space: Optional[SearchSpace] = None,
-        plot: bool = False,
-        save_lambda = False,
-        save_path: str = None
+            self,
+            objective_tag: Tag,
+            inequality_constraint_prefix: Optional[Tag] = None,
+            equality_constraint_prefix: Optional[Tag] = None,
+            inequality_lambda: Optional[Mapping[Tag, tf.Variable]] = None,
+            equality_lambda: Optional[Mapping[Tag, tf.Variable]] = None,
+            penalty: tf.Variable = 1,
+            epsilon: float = 0.001,
+            search_space: Optional[SearchSpace] = None,
+            plot: bool = False,
+            save_lambda=False,
+            save_path: str = None
     ):
         """
         :param objective_tag: The tag for the objective data and model.
@@ -74,7 +76,7 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         self._save_lambda = save_lambda
         self._save_path = save_path
         self._iteration = 0
-        self._inequality_lambda_tracker = {} # Store inequality Lagrange multipliers over time
+        self._inequality_lambda_tracker = {}  # Store inequality Lagrange multipliers over time
         self._penalty_tracker = [self._penalty]
 
         for k, v in self._inequality_lambda.items():
@@ -88,9 +90,9 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         )
 
     def prepare_acquisition_function(
-        self,
-        models: Mapping[Tag, HasTrajectorySampler],
-        datasets: Optional[Mapping[Tag, Dataset]] = None,
+            self,
+            models: Mapping[Tag, HasTrajectorySampler],
+            datasets: Optional[Mapping[Tag, Dataset]] = None,
     ) -> AcquisitionFunction:
         """
         :param models: The models over each tag.
@@ -130,10 +132,10 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         return self._augmented_lagrangian_fn
 
     def update_acquisition_function(
-        self,
-        function: AcquisitionFunction,
-        models: Mapping[Tag, ProbabilisticModelType],
-        datasets: Optional[Mapping[Tag, Dataset]] = None,
+            self,
+            function: AcquisitionFunction,
+            models: Mapping[Tag, ProbabilisticModelType],
+            datasets: Optional[Mapping[Tag, Dataset]] = None,
     ) -> AcquisitionFunction:
         """
         :param function: The acquisition function to update.
@@ -150,7 +152,7 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         tf.debugging.assert_positive(
             len(objective_dataset),
             message="Lagrange multiplier updates are defined with respect to existing points in the"
-            " objective data, but the objective data is empty.",
+                    " objective data, but the objective data is empty.",
         )
 
         # Last point in dataset is most recent estimate of optimal x value
@@ -165,12 +167,14 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
 
         # Update Lagrange multipliers for inequality constraints
         if self._inequality_constraint_prefix is not None:
-            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            inequality_constraint_tags = [key for key in datasets.keys() if
+                                          key.startswith(self._inequality_constraint_prefix)]
             for tag in inequality_constraint_tags:
                 inequality_constraint_val = datasets[tag].observations[-1][None, ...]
                 tf.debugging.assert_shapes([(inequality_constraint_val, (1, 1))])
                 slack_val = self._obtain_slacks(inequality_constraint_val, self._inequality_lambda[tag], self._penalty)
-                updated_multiplier = self._inequality_lambda[tag] + (1 / self._penalty) * (inequality_constraint_val + slack_val)
+                updated_multiplier = self._inequality_lambda[tag] + (1 / self._penalty) * (
+                            inequality_constraint_val + slack_val)
                 self._inequality_lambda[tag] = updated_multiplier
                 # If close to zero, we consider it satisfied so penalty doesn't get updated too frequently - otherwise
                 # optimiser sometimes fails
@@ -183,7 +187,8 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         # Update Lagrange multipliers for equality constraints
         # TODO: Test out code for updating equality constraints
         if self._equality_constraint_prefix is not None:
-            equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
+            equality_constraint_tags = [key for key in datasets.keys() if
+                                        key.startswith(self._equality_constraint_prefix)]
             for tag in equality_constraint_tags:
                 equality_constraint_val = datasets[tag].observations[-1][None, ...]
                 updated_multiplier = self._equality_lambda[tag] + (1 / self._penalty) * equality_constraint_val
@@ -264,7 +269,8 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
             for tag, inequality_constraint_trajectory in self._inequality_constraint_trajectories.items():
                 inequality_constraint_vals = inequality_constraint_trajectory(x)
                 inequality_constraint_vals = tf.squeeze(inequality_constraint_vals, -2)
-                slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag], self._penalty)
+                slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag],
+                                                 self._penalty)
                 assert (slack_vals.shape == inequality_constraint_vals.shape)
                 inequality_plus_slack = inequality_constraint_vals + slack_vals
                 inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack
@@ -295,7 +301,6 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])
         return slack_vals_non_neg
 
-
     def _plot_models(self, prev_query_point):
         """
         Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
@@ -308,23 +313,29 @@ class ThompsonSamplingAugmentedLagrangian(AcquisitionFunctionBuilder[HasTrajecto
         objective_pred = self._objective_trajectory(coordinates)
         lagrangian_pred = - self._augmented_lagrangian(coordinates)
         fig, (ax1, ax2) = plt.subplots(2, len(self._inequality_constraint_trajectories) + 1, figsize=(15, 7))
-        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]),
+                                         levels=500)
         fig.colorbar(objective_plot)
         ax1[0].set_xlabel("OBJECTIVE")
         i = 1
         for tag, trajectory in self._inequality_constraint_trajectories.items():
             inequality_trajectory_pred = trajectory(coordinates)
-            inequality_plot = ax1[i].contourf(xs, ys, tf.reshape(inequality_trajectory_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+            inequality_plot = ax1[i].contourf(xs, ys, tf.reshape(inequality_trajectory_pred,
+                                                                 [y_list.shape[0], x_list.shape[0]]), levels=500)
             ax1[i].set_xlabel(tag)
             fig.colorbar(inequality_plot)
             i += 1
-        lagrangian_plot = ax2[0].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=np.linspace(-3, 3, 500), extend="both")
+        lagrangian_plot = ax2[0].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]),
+                                          levels=np.linspace(-3, 3, 500), extend="both")
         fig.colorbar(lagrangian_plot)
         ax2[0].set_xlabel("AUGMENTED_LAGRANGIAN (CLIPPED)")
-        clipped_lagrangian_plot = ax2[1].contourf(xs, ys, tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        clipped_lagrangian_plot = ax2[1].contourf(xs, ys,
+                                                  tf.reshape(lagrangian_pred, [y_list.shape[0], x_list.shape[0]]),
+                                                  levels=500)
         fig.colorbar(clipped_lagrangian_plot)
         ax2[1].set_xlabel("AUGMENTED_LAGRANGIAN (UNCLIPPED)")
-        ax2[2].text(0.5, 0.5, f"Iteration: {self._iteration} \n Previous Query: {prev_query_point}",  horizontalalignment='center', verticalalignment='center')
+        ax2[2].text(0.5, 0.5, f"Iteration: {self._iteration} \n Previous Query: {prev_query_point}",
+                    horizontalalignment='center', verticalalignment='center')
         ax2[2].axis("off")
         plt.tight_layout()
         plt.show()
@@ -343,11 +354,11 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         inequality_lambda: Optional[Mapping[Tag, tf.Tensor]] = None,
         equality_lambda: Optional[Mapping[Tag, tf.Tensor]] = None,
         batch_size: int = 1,
-        penalty: tf.Tensor = 1,
+        penalty: tf.Tensor = None,
         epsilon: float = 0.001,
         search_space: Optional[SearchSpace] = None,
         plot: bool = False,
-        save_lambda = False,
+        save_lambda: bool = False,
         save_path: str = None,
         num_bo_iters: int = None,
     ):
@@ -357,7 +368,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         :param equality_constraint_prefix: Prefix for tags for equality constraint data/models/Lagrange multipliers.
         :param inequality_lambda: Initial values for Lagrange multipliers of inequality constraints.
         :param equality_lambda: Initial values for Lagrange multipliers of equality constraints.
-        :param penalty: Initial penalty.
+        :param penalty: Initial penalty. If None, it is set to a default value using the _get_initial_penalty method.
         :param epsilon: Bound within which constraints are considered to be satisfied.
         :param search_space: The global search space over which the optimisation is defined. This is
             only used to determine explicit constraints.
@@ -374,10 +385,10 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._objective_tag = objective_tag
         self._inequality_constraint_prefix = inequality_constraint_prefix
         self._equality_constraint_prefix = equality_constraint_prefix
-        self._inequality_lambda = inequality_lambda # [1, B, 1]
+        self._inequality_lambda = inequality_lambda  # [1, B, 1]
         self._equality_lambda = equality_lambda
         self._batch_size = batch_size
-        self._penalty = penalty # [1, B, 1]
+        self._penalty = penalty  # [1, B, 1]
         self._epsilon = epsilon
         self._search_space = search_space
         self._augmented_lagrangian_fn = None
@@ -389,7 +400,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._inequality_lambda_tracker = {}
         self._equality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
-        self._previous_iteration_models = None
 
         if self._inequality_lambda is not None:
             for k, v in self._inequality_lambda.items():
@@ -421,7 +431,9 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
 
-        self._previous_iteration_models = copy.deepcopy(models)
+        if self._penalty is None:
+            initial_penalty = self._get_initial_penalty(datasets)
+            self._penalty = initial_penalty * tf.ones((1, self._batch_size, 1), dtype=tf.float64)
 
         self._objective_trajectory_sampler = models[self._objective_tag].trajectory_sampler()
         self._objective_trajectory = self._objective_trajectory_sampler.get_trajectory()
@@ -450,11 +462,67 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
 
         return self._augmented_lagrangian_fn
 
+    def _get_initial_penalty(self,
+                             datasets: Optional[Mapping[Tag, Dataset]] = None):
+        """
+        :param datasets: The data from the observer.
+        :return: Initial penalty to use in Augmented Lagrangian, calculated as done by https://www.mcs.anl.gov/papers/P5401-0915.pdf
+                 and https://arxiv.org/pdf/1605.09466.pdf
+        """
+        all_satisfied = None
+        sum_squared = None
+        if self._inequality_constraint_prefix is not None:
+            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            for tag in inequality_constraint_tags:
+                constraint_satisfied = tf.squeeze(datasets[tag].observations) <= 0
+                if all_satisfied is None:
+                    all_satisfied = constraint_satisfied
+                else:
+                    all_satisfied = tf.logical_and(all_satisfied, constraint_satisfied)
+
+                constraint_squared = tf.square(tf.nn.relu(tf.squeeze(datasets[tag].observations)))
+                if sum_squared is None:
+                    sum_squared = constraint_squared
+                else:
+                    sum_squared += constraint_squared
+
+        if self._equality_constraint_prefix is not None:
+            equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
+            for tag in equality_constraint_tags:
+                constraint_satisfied = tf.abs(tf.squeeze(datasets[tag].observations)) <= self._epsilon
+                if all_satisfied is None:
+                    all_satisfied = constraint_satisfied
+                else:
+                    all_satisfied = tf.logical_and(all_satisfied, constraint_satisfied)
+
+                constraint_squared = tf.square(tf.squeeze(datasets[tag].observations))
+                if sum_squared is None:
+                    sum_squared = constraint_squared
+                else:
+                    sum_squared += constraint_squared
+
+        at_least_one_violated = tf.logical_not(all_satisfied)
+
+        if tf.reduce_sum(tf.cast(at_least_one_violated, tf.int32)) == 0:
+            # If valid everywhere, set initial penalty to one
+            initial_penalty = 1
+        else:
+            sum_squared = sum_squared[at_least_one_violated]
+            min_sum_squared = tf.math.reduce_min(sum_squared)
+            if tf.reduce_sum(tf.cast(all_satisfied, tf.int32)) == 0:
+                denominator = 2 * tfp.stats.percentile(datasets[self._objective_tag].observations, 50.0, interpolation='midpoint')
+            else:
+                best_valid_objective = tf.math.reduce_min(datasets[self._objective_tag].observations[all_satisfied])
+                denominator = 2 * best_valid_objective
+            initial_penalty = min_sum_squared / denominator
+
+        return tf.cast(tf.abs(initial_penalty), dtype=tf.float64)
+
     def update_acquisition_function(
-        self,
-        function: AcquisitionFunction,
-        models: Mapping[Tag, ProbabilisticModelType],
-        datasets: Optional[Mapping[Tag, Dataset]] = None,
+            self,
+            function: AcquisitionFunction,
+            models: Mapping[Tag, ProbabilisticModelType],
+            datasets: Optional[Mapping[Tag, Dataset]] = None,
     ) -> AcquisitionFunction:
         """
         :param function: The acquisition function to update.
@@ -472,7 +540,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         tf.debugging.assert_positive(
             len(objective_dataset),
             message="Lagrange multiplier updates are defined with respect to existing points in the"
-            " objective data, but the objective data is empty.",
+                    " objective data, but the objective data is empty.",
         )
 
         # Last "batch_size" points in dataset are most recent estimates of optimal x value
@@ -498,7 +566,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                 # If close to zero (but not less than zero), we consider it satisfied so penalty doesn't get updated too
                 # frequently - otherwise optimiser sometimes fails
                 batch_inequality_constraints_violated = tf.logical_or(batch_inequality_constraints_violated,
-                                                                      inequality_constraint_val > self._epsilon) # See if any of the constraints are violated
+                                                                      inequality_constraint_val > self._epsilon)  # See if any of the constraints are violated
                 if tf.reduce_sum(tf.cast(batch_inequality_constraints_violated, tf.int8)) != 0:
                     inequality_constraints_satisfied = False
 
@@ -506,9 +574,10 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         # TODO: Test out code for updating equality constraints
         batch_equality_constraints_violated = tf.constant(False, shape=(1, self._batch_size, 1))
         if self._equality_constraint_prefix is not None:
-            equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
+            equality_constraint_tags = [key for key in datasets.keys() if
+                                        key.startswith(self._equality_constraint_prefix)]
             for tag in equality_constraint_tags:
-                equality_constraint_val = datasets[tag].observations[-self._batch_size:][None, ...] # [1, B, 1]
+                equality_constraint_val = datasets[tag].observations[-self._batch_size:][None, ...]  # [1, B, 1]
                 updated_multiplier = self._equality_lambda[tag] + (1 / self._penalty) * equality_constraint_val
                 self._equality_lambda[tag] = updated_multiplier
                 batch_equality_constraints_violated = tf.logical_or(batch_equality_constraints_violated,
@@ -520,12 +589,15 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         print(f"Inequality Lambda: {self._inequality_lambda}")
         print(f"Equality Lambda: {self._equality_lambda}")
         assert (batch_inequality_constraints_violated.shape == batch_equality_constraints_violated.shape)
-        batch_constraints_violated = tf.logical_or(batch_inequality_constraints_violated, batch_equality_constraints_violated)
+        batch_constraints_violated = tf.logical_or(batch_inequality_constraints_violated,
+                                                   batch_equality_constraints_violated)
         sum_batch_constraints_violated = tf.reduce_sum(tf.cast(batch_constraints_violated, tf.float64))
         print(f"Num Violated: {sum_batch_constraints_violated}")
         if not (equality_constraints_satisfied and inequality_constraints_satisfied):
-            self._penalty = tf.where(batch_constraints_violated, self._penalty / tf.pow(tf.constant(2, dtype=tf.float64), sum_batch_constraints_violated),
-                                                                 self._penalty)
+            self._penalty = tf.where(batch_constraints_violated,
+                                     self._penalty / tf.pow(tf.constant(2, dtype=tf.float64),
+                                                            sum_batch_constraints_violated),
+                                     self._penalty)
             print(f"Not Satisfied. Updated Penalty: {self._penalty}")
         else:
             print(f"Satisfied")
@@ -571,8 +643,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             updated_trajectory = sampler.update_trajectory(old_trajectory)
             self._equality_constraint_trajectories[tag] = updated_trajectory
 
-        self._previous_iteration_models = copy.deepcopy(models)
-
         if self._plot:
             self._plot_models(opt_objective_x)
 
@@ -597,8 +667,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         if self._equality_constraint_prefix is not None:
             for tag, equality_constraint_trajectory in self._equality_constraint_trajectories.items():
-                equality_constraint_vals = equality_constraint_trajectory(x) # [N, B, 1]
-                equality_lambda_scaled = self._equality_lambda[tag] * equality_constraint_vals # [N, B, 1]
+                equality_constraint_vals = equality_constraint_trajectory(x)  # [N, B, 1]
+                equality_lambda_scaled = self._equality_lambda[tag] * equality_constraint_vals  # [N, B, 1]
                 equality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(equality_constraint_vals)
                 sum_equality_penalty_scaled += equality_penalty_scaled
                 sum_equality_lambda_scaled += equality_lambda_scaled
@@ -609,11 +679,12 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         sum_inequality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         if self._inequality_constraint_prefix is not None:
             for tag, inequality_constraint_trajectory in self._inequality_constraint_trajectories.items():
-                inequality_constraint_vals = inequality_constraint_trajectory(x) # [N, B, 1]
-                slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag], self._penalty) # [N, B, 1]
+                inequality_constraint_vals = inequality_constraint_trajectory(x)  # [N, B, 1]
+                slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag],
+                                                 self._penalty)  # [N, B, 1]
                 assert (slack_vals.shape == inequality_constraint_vals.shape)
                 inequality_plus_slack = inequality_constraint_vals + slack_vals
-                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack # [N, B, 1] - This could lose first axis if N = 1
+                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, B, 1] - This could lose first axis if N = 1
                 inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(inequality_plus_slack)
                 assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
                 assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
