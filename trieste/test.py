@@ -40,11 +40,11 @@ if __name__ == "__main__":
 
         inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.Variable([[[0.0]]], dtype=tf.float64),
                              INEQUALITY_CONSTRAINT_TWO: tf.Variable([[[0.0]]], dtype=tf.float64)}
-        # initial_penalty = tf.Variable([[[0.0001]]], dtype=tf.float64)
+        initial_penalty = tf.Variable([[[0.5]]], dtype=tf.float64)
 
         # save_path = f"../results/30-03-23/lsq/data/run_{run}"
         augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", None, inequality_lambda,
-                                                                        None, BATCH_SIZE, None, EPSILON, search_space,
+                                                                        None, BATCH_SIZE, initial_penalty, EPSILON, True, search_space,
                                                                         False, save_lambda=False, num_bo_iters=NUM_BO_ITERS)
 
         # rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(),
