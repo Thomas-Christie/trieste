@@ -389,8 +389,14 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._objective_tag = objective_tag
         self._inequality_constraint_prefix = inequality_constraint_prefix
         self._equality_constraint_prefix = equality_constraint_prefix
-        self._inequality_lambda = inequality_lambda  # [1, B, 1]
-        self._equality_lambda = equality_lambda
+        if inequality_lambda is None:
+            self._inequality_lambda = {}
+        else:
+            self._inequality_lambda = inequality_lambda  # Values of shape [1, B, 1]
+        if equality_lambda is None:
+            self._equality_lambda = {}
+        else:
+            self._equality_lambda = equality_lambda  # Values of shape [1, B, 1]
         self._batch_size = batch_size
         self._penalty = penalty  # [1, B, 1]
         self._epsilon = epsilon
@@ -632,7 +638,21 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             inequality_constraint_grad_dict[tag] = constraint_grads
             inequality_constraint_bind_dict[tag] = binding
 
-        updated_inequality_lagrange_multipliers = {}  # Dictionary mapping tag -> list of updated Lagrange multipliers (of length batch_size)
+        # Get gradients of equality constraints
+        equality_constraint_grad_dict = {}
+        equality_constraint_bind_dict = {}
+        for tag, trajectory in self._equality_constraint_trajectories.items():
+            with tf.GradientTape(persistent=True) as tape:
+                tape.watch(batch_query_points)
+                constraint_predictions = trajectory(batch_query_points)
+            binding = tf.squeeze(tf.abs(constraint_predictions) <= self._epsilon, axis=0)  # If constraint near 0, consider to be binding, shape: [B, 1]
+            constraint_grads = tf.squeeze(tape.gradient(constraint_predictions, batch_query_points), axis=0)  # [B, D]
+            equality_constraint_grad_dict[tag] = constraint_grads
+            equality_constraint_bind_dict[tag] = binding
+
+        # Dictionaries mapping tag -> list of updated Lagrange multipliers (of length batch_size)
+        updated_inequality_lagrange_multipliers = {}
+        updated_equality_lagrange_multipliers = {}
         # Calculate updated Lagrange multipliers for each element in the batch separately
         for batch in range(self._batch_size):
             objective_grad = objective_grads[batch][..., None]
@@ -644,10 +664,23 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                 if binding:
                     binding_inequality_constraints[tag] = inequality_constraint_grad_dict[tag][batch]
 
+            binding_equality_constraints = OrderedDict()
+            for tag, gradient in equality_constraint_grad_dict.items():
+                binding = equality_constraint_bind_dict[tag][batch]
+                # Only consider binding constraints
+                if binding:
+                    binding_equality_constraints[tag] = equality_constraint_grad_dict[tag][batch]
+
             # Construct gradient matrix
             gradient_matrix = None
 
             for tag, gradient in binding_inequality_constraints.items():
+                if gradient_matrix is None:
+                    gradient_matrix = gradient[..., None]
+                else:
+                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
+
+            for tag, gradient in binding_equality_constraints.items():
                 if gradient_matrix is None:
                     gradient_matrix = gradient[..., None]
                 else:
@@ -660,28 +693,60 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                         updated_inequality_lagrange_multipliers[tag].append(0)
                     else:
                         updated_inequality_lagrange_multipliers[tag] = [0]
+
+                for tag in self._equality_lambda.keys():
+                    if tag in updated_equality_lagrange_multipliers.keys():
+                        updated_equality_lagrange_multipliers[tag].append(0)
+                    else:
+                        updated_equality_lagrange_multipliers[tag] = [0]
             else:
+                num_binding_inequality_constraints = len(binding_inequality_constraints)
+                num_binding_equality_constraints = len(binding_equality_constraints)
                 # TODO: Need to consider case when least-squares problem doesn't have a unique solution
                 lagrange_multipliers = tf.linalg.inv(tf.matmul(gradient_matrix, gradient_matrix, transpose_a=True)) @ tf.transpose(gradient_matrix) @ (-objective_grad)
-                lagrange_multipliers = tf.nn.relu(lagrange_multipliers)
-                binding_constraint_tags = list(binding_inequality_constraints.keys())
-                for i in range(len(binding_constraint_tags)):
-                    tag = binding_constraint_tags[i]
-                    if tag in updated_inequality_lagrange_multipliers.keys():
-                        updated_inequality_lagrange_multipliers[tag].append(tf.squeeze(lagrange_multipliers[i]))
-                    else:
-                        updated_inequality_lagrange_multipliers[tag] = [tf.squeeze(lagrange_multipliers[i])]
 
-                # Give non-binding constraints Lagrange multipliers of 0
-                for tag in self._inequality_lambda.keys():
-                    if tag not in binding_constraint_tags:
+                if num_binding_inequality_constraints > 0:
+                    # Enforce non-negativity of inequality constraint Lagrange multipliers
+                    inequality_lagrange_multipliers = tf.nn.relu(lagrange_multipliers[:num_binding_inequality_constraints])
+                    binding_inequality_constraint_tags = list(binding_inequality_constraints.keys())
+                    for i in range(len(binding_inequality_constraint_tags)):
+                        tag = binding_inequality_constraint_tags[i]
                         if tag in updated_inequality_lagrange_multipliers.keys():
-                            updated_inequality_lagrange_multipliers[tag].append(0)
+                            updated_inequality_lagrange_multipliers[tag].append(tf.squeeze(inequality_lagrange_multipliers[i]))
                         else:
-                            updated_inequality_lagrange_multipliers[tag] = [0]
+                            updated_inequality_lagrange_multipliers[tag] = [tf.squeeze(inequality_lagrange_multipliers[i])]
+
+                    # Give non-binding constraints Lagrange multipliers of 0
+                    for tag in self._inequality_lambda.keys():
+                        if tag not in binding_inequality_constraint_tags:
+                            if tag in updated_inequality_lagrange_multipliers.keys():
+                                updated_inequality_lagrange_multipliers[tag].append(0)
+                            else:
+                                updated_inequality_lagrange_multipliers[tag] = [0]
+
+                if num_binding_equality_constraints > 0:
+                    equality_lagrange_multipliers = lagrange_multipliers[num_binding_inequality_constraints:]
+                    binding_equality_constraint_tags = list(binding_equality_constraints.keys())
+                    for i in range(len(binding_equality_constraint_tags)):
+                        tag = binding_equality_constraint_tags[i]
+                        if tag in updated_equality_lagrange_multipliers.keys():
+                            updated_equality_lagrange_multipliers[tag].append(tf.squeeze(equality_lagrange_multipliers[i]))
+                        else:
+                            updated_equality_lagrange_multipliers[tag] = [tf.squeeze(equality_lagrange_multipliers[i])]
+
+                    # Give non-binding constraints Lagrange multipliers of 0
+                    for tag in self._equality_lambda.keys():
+                        if tag not in binding_equality_constraint_tags:
+                            if tag in updated_equality_lagrange_multipliers.keys():
+                                updated_equality_lagrange_multipliers[tag].append(0)
+                            else:
+                                updated_equality_lagrange_multipliers[tag] = [0]
 
         for tag, updated_lagrange_multiplier in updated_inequality_lagrange_multipliers.items():
             self._inequality_lambda[tag] = tf.Variable(updated_lagrange_multiplier, dtype=tf.float64)[None, ..., None]
+
+        for tag, updated_lagrange_multiplier in updated_equality_lagrange_multipliers.items():
+            self._equality_lambda[tag] = tf.Variable(updated_lagrange_multiplier, dtype=tf.float64)[None, ..., None]
 
     def _default_lagrange_update(self,
                                  datasets: Mapping[Tag, Dataset]):
@@ -737,7 +802,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             equality_constraint_tags = [key for key in datasets.keys() if
                                         key.startswith(self._equality_constraint_prefix)]
             for tag in equality_constraint_tags:
-                equality_constraint_val = datasets[tag].observations[-self._batch_size:][None, ...]  # [1, B, 1]r
+                equality_constraint_val = datasets[tag].observations[-self._batch_size:][None, ...]  # [1, B, 1]
                 batch_equality_constraints_violated = tf.logical_or(batch_equality_constraints_violated,
                                                                     tf.abs(equality_constraint_val) > self._epsilon)
 

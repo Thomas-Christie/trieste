@@ -68,35 +68,35 @@ if __name__ == "__main__":
 #     initial_inputs = search_space.sample(NUM_INITIAL_SAMPLES)
 #     initial_data = observer(initial_inputs)
 #
-#     constraint_one_satisfied = (tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations) <= 0)
-#     constraint_two_satisfied = (tf.abs(tf.squeeze(initial_data[EQUALITY_CONSTRAINT_ONE].observations)) <= 0 + EPSILON)
-#     constraint_three_satisfied = (tf.abs(tf.squeeze(initial_data[EQUALITY_CONSTRAINT_TWO].observations)) <= 0 + EPSILON)
-#     all_satisfied = tf.logical_and(constraint_one_satisfied, constraint_two_satisfied)
-#     all_satisfied = tf.logical_and(all_satisfied, constraint_three_satisfied)
-#     at_least_one_violated = tf.logical_not(all_satisfied)
-#
-#     initial_penalty = None
-#     if tf.reduce_sum(tf.cast(at_least_one_violated, tf.int32)) == 0:
-#         # If valid everywhere, set initial penalty to one
-#         initial_penalty = 1
-#     else:
-#         invalid_ineq_one_squared = tf.square(tf.nn.relu(
-#             tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations)[at_least_one_violated]))
-#         invalid_eq_one_squared = tf.square(
-#             tf.squeeze(initial_data[EQUALITY_CONSTRAINT_ONE].observations)[at_least_one_violated])
-#         invalid_eq_two_squared = tf.square(
-#             tf.squeeze(initial_data[EQUALITY_CONSTRAINT_TWO].observations)[at_least_one_violated])
-#         sum_squared = invalid_ineq_one_squared + invalid_eq_one_squared + invalid_eq_two_squared
-#         min_sum_squared = tf.math.reduce_min(sum_squared)
-#         if tf.reduce_sum(tf.cast(all_satisfied, tf.int32)) == 0:
-#             denominator = 2 * tfp.stats.percentile(initial_data[OBJECTIVE].observations, 50.0, interpolation='midpoint')
-#             initial_penalty = min_sum_squared / denominator
-#         else:
-#             best_valid_objective = tf.math.reduce_min(initial_data[OBJECTIVE].observations[all_satisfied])
-#             denominator = 2 * best_valid_objective
-#             initial_penalty = min_sum_squared / denominator
-#
-#     print(f"Original Initial Penalty: {tf.abs(initial_penalty)}")
+#     # constraint_one_satisfied = (tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations) <= 0)
+#     # constraint_two_satisfied = (tf.abs(tf.squeeze(initial_data[EQUALITY_CONSTRAINT_ONE].observations)) <= 0 + EPSILON)
+#     # constraint_three_satisfied = (tf.abs(tf.squeeze(initial_data[EQUALITY_CONSTRAINT_TWO].observations)) <= 0 + EPSILON)
+#     # all_satisfied = tf.logical_and(constraint_one_satisfied, constraint_two_satisfied)
+#     # all_satisfied = tf.logical_and(all_satisfied, constraint_three_satisfied)
+#     # at_least_one_violated = tf.logical_not(all_satisfied)
+#     #
+#     # initial_penalty = None
+#     # if tf.reduce_sum(tf.cast(at_least_one_violated, tf.int32)) == 0:
+#     #     # If valid everywhere, set initial penalty to one
+#     #     initial_penalty = 1
+#     # else:
+#     #     invalid_ineq_one_squared = tf.square(tf.nn.relu(
+#     #         tf.squeeze(initial_data[INEQUALITY_CONSTRAINT_ONE].observations)[at_least_one_violated]))
+#     #     invalid_eq_one_squared = tf.square(
+#     #         tf.squeeze(initial_data[EQUALITY_CONSTRAINT_ONE].observations)[at_least_one_violated])
+#     #     invalid_eq_two_squared = tf.square(
+#     #         tf.squeeze(initial_data[EQUALITY_CONSTRAINT_TWO].observations)[at_least_one_violated])
+#     #     sum_squared = invalid_ineq_one_squared + invalid_eq_one_squared + invalid_eq_two_squared
+#     #     min_sum_squared = tf.math.reduce_min(sum_squared)
+#     #     if tf.reduce_sum(tf.cast(all_satisfied, tf.int32)) == 0:
+#     #         denominator = 2 * tfp.stats.percentile(initial_data[OBJECTIVE].observations, 50.0, interpolation='midpoint')
+#     #         initial_penalty = min_sum_squared / denominator
+#     #     else:
+#     #         best_valid_objective = tf.math.reduce_min(initial_data[OBJECTIVE].observations[all_satisfied])
+#     #         denominator = 2 * best_valid_objective
+#     #         initial_penalty = min_sum_squared / denominator
+#     #
+#     # print(f"Original Initial Penalty: {tf.abs(initial_penalty)}")
 #     initial_models = trieste.utils.map_values(create_model, initial_data)
 #
 #     # inequality_lambda = tf.constant([[2.0], [2.0]], dtype=tf.float64)
@@ -110,13 +110,13 @@ if __name__ == "__main__":
 #     # save_path = f"../results/22-02-23/run_data/run_0"
 #     augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(OBJECTIVE, "INEQUALITY", "EQUALITY",
 #                                                                     inequality_lambda, equality_lambda,
-#                                                                     BATCH_SIZE, None, EPSILON, search_space,
+#                                                                     BATCH_SIZE, None, EPSILON, True, search_space,
 #                                                                     plot=False, save_lambda=False,
 #                                                                     num_bo_iters=NUM_BO_ITERS)
 #
 #     rule = EfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_continuous_optimizer(),
 #                                        num_query_points=BATCH_SIZE)
 #     bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
-#     data = bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
+#     data = bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True, fit_initial_model=False).try_get_final_datasets()
 #     # with open(f"../results/22-02-23/run_data/run_0_data.pkl", "wb") as fp:
 #     #     pickle.dump(data, fp)
