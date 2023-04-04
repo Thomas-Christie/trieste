@@ -411,6 +411,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._inequality_lambda_tracker = {}
         self._equality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
+        self._stop_decreasing_penalty = False
 
         if self._inequality_lambda is not None:
             for k, v in self._inequality_lambda.items():
@@ -577,7 +578,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             self._default_lagrange_update(datasets)
 
         # Update penalty
-        self._update_penalty(datasets)
+        if not self._stop_decreasing_penalty:
+            self._update_penalty(datasets)
 
         opt_objective_x = datasets[self._objective_tag].query_points[-self._batch_size:]
         opt_objective_value = datasets[self._objective_tag].observations[-self._batch_size:]
@@ -822,6 +824,17 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             print(f"Not Satisfied. Updated Penalty: {self._penalty}")
         else:
             print(f"Satisfied")
+
+    def increase_penalty_and_return_acquisition_function(self):
+        """
+        Occasionally once penalty becomes very small L-BFGS-B will fail. I strongly suspect this is due to the gradient
+        near the constraint satisfaction boundary becoming extremely large. If this starts to happen, we stop decreasing
+        the penalty parameter and increase, until optimisation starts to work again.
+        """
+        self._stop_decreasing_penalty = True
+        self._penalty = 2.0 * self._penalty
+        self._augmented_lagrangian_fn = self._augmented_lagrangian
+        return self._augmented_lagrangian_fn
 
     def _augmented_lagrangian(
             self,

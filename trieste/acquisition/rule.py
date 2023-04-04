@@ -44,6 +44,7 @@ from ..observer import OBJECTIVE
 from ..space import Box, SearchSpace
 from ..types import State, Tag, TensorType
 from .function import (
+    BatchThompsonSamplingAugmentedLagrangian,
     BatchMonteCarloExpectedImprovement,
     ExpectedImprovement,
     ProbabilityOfImprovement,
@@ -60,6 +61,7 @@ from .interface import (
 )
 from .multi_objective import Pareto
 from .optimizer import (
+    FailedOptimizationError,
     AcquisitionOptimizer,
     ALAcquisitionOptimizer,
     automatic_optimizer_selector,
@@ -77,6 +79,7 @@ ResultType = TypeVar("ResultType", covariant=True)
 SearchSpaceType = TypeVar("SearchSpaceType", bound=SearchSpace, contravariant=True)
 """ Contravariant type variable bound to :class:`~trieste.space.SearchSpace`. """
 
+MAX_OPTIMISATION_ATTEMPTS = 10
 
 class AcquisitionRule(ABC, Generic[ResultType, SearchSpaceType, ProbabilisticModelType]):
     """
@@ -348,7 +351,13 @@ class ALEfficientGlobalOptimization(
     """Implements the Efficient Global Optimization, or EGO, algorithm, adapted
        for optimising the BatchThompsonSamplingAugmentedLagrangian acquisition function,
        so that we can pass to the optimiser the most recently queried point for use as a starting
-       point for L-BFGS-B optimization."""
+       point for L-BFGS-B optimization.
+
+       Once the penalty parameter in the augmented Lagrangian becomes very small, the acquisition function can become
+       difficult to optimise, which can result in failures. We retry optimising the acquisition function
+       MAX_OPTIMISATION_ATTEMPTS times once this happens, increasing the penalty parameter after each failed attempt, to
+       make the acquisition function more amenable to optimization via L-BFGS-B.
+    """
 
     @overload
     def __init__(
@@ -363,12 +372,7 @@ class ALEfficientGlobalOptimization(
     @overload
     def __init__(
         self: "ALEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModelType]",
-        builder: (
-            AcquisitionFunctionBuilder[ProbabilisticModelType]
-            | GreedyAcquisitionFunctionBuilder[ProbabilisticModelType]
-            | SingleModelAcquisitionBuilder[ProbabilisticModelType]
-            | SingleModelGreedyAcquisitionBuilder[ProbabilisticModelType]
-        ),
+        builder: BatchThompsonSamplingAugmentedLagrangian,
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,
@@ -377,21 +381,13 @@ class ALEfficientGlobalOptimization(
 
     def __init__(
         self,
-        builder: Optional[
-            AcquisitionFunctionBuilder[ProbabilisticModelType]
-            | GreedyAcquisitionFunctionBuilder[ProbabilisticModelType]
-            | VectorizedAcquisitionFunctionBuilder[ProbabilisticModelType]
-            | SingleModelAcquisitionBuilder[ProbabilisticModelType]
-            | SingleModelGreedyAcquisitionBuilder[ProbabilisticModelType]
-            | SingleModelVectorizedAcquisitionBuilder[ProbabilisticModelType]
-        ] = None,
+        builder: Optional[BatchThompsonSamplingAugmentedLagrangian] = None,
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,
     ):
         """
-        :param builder: The acquisition function builder to use. Defaults to
-            :class:`~trieste.acquisition.ExpectedImprovement`.
+        :param builder: The acquisition function builder to use. Designed to work with BatchThompsonSamplingAugmentedLagrangian.
         :param optimizer: The optimizer with which to optimize the acquisition function built by
             ``builder``. This should *maximize* the acquisition function, and must be compatible
             with the global search space. Defaults to
@@ -438,11 +434,7 @@ class ALEfficientGlobalOptimization(
                 # TODO: Raise error here? Currently we're only working with AL which is vectorizable
                 pass
 
-        self._builder: Union[
-            AcquisitionFunctionBuilder[ProbabilisticModelType],
-            GreedyAcquisitionFunctionBuilder[ProbabilisticModelType],
-            VectorizedAcquisitionFunctionBuilder[ProbabilisticModelType],
-        ] = builder
+        self._builder: BatchThompsonSamplingAugmentedLagrangian = builder
         self._optimizer = optimizer
         self._num_query_points = num_query_points
         self._acquisition_function: Optional[AcquisitionFunction] = initial_acquisition_function
@@ -493,8 +485,23 @@ class ALEfficientGlobalOptimization(
 
         dataset_keys = list(datasets.keys())
         most_recent_query_point = datasets[dataset_keys[0]].query_points[-1][None, ...]
+        optimisation_failed = True
+        num_optimisation_attempts = 0
         with tf.name_scope("ALEGO.optimizer" + "[0]" * greedy):
-            points = self._optimizer(search_space, self._acquisition_function, most_recent_query_point)
+            while optimisation_failed and num_optimisation_attempts < MAX_OPTIMISATION_ATTEMPTS:
+                try:
+                    num_optimisation_attempts += 1
+                    points = self._optimizer(search_space, self._acquisition_function, most_recent_query_point)
+                    print(f"Successful Optimisation")
+                    optimisation_failed = False
+                except FailedOptimizationError as e:
+                    print(f"Optimisation Failed, Number of Attempts so Far: {num_optimisation_attempts}")
+                    if num_optimisation_attempts == MAX_OPTIMISATION_ATTEMPTS:
+                        raise e
+                    else:
+                        # If optimization failed, we increase penalty and try again, as once penalty becomes very
+                        # small it can cause L-BFGS-B to fail.
+                        self._acquisition_function = self._builder.increase_penalty_and_return_acquisition_function()
 
         if summary_writer:
             with summary_writer.as_default(step=step_number):
