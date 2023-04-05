@@ -25,7 +25,7 @@ def goldstein_price(x: tf.Tensor) -> tf.Tensor:
     b_one = tf.square(8 * x0 - 12 * x1 + 2)
     b_two = - 14 - 128 * x0 + 12 * tf.square(4 * x0 - 2) + 192 * x1 - 36 * (4 * x0 - 2) * (4 * x1 - 2) + 27 * tf.square(4 * x1 - 2)
     b = b_one * b_two
-    objective = (tf.math.log((1 + a) * (30 + b)) - 8.69) / 2.43
+    objective = (tf.math.log((1 + a) * (30 + b)) - 8.6928) / 2.4269
     tf.debugging.assert_rank(objective, 2)
     return objective
 
