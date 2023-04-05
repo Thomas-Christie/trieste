@@ -344,7 +344,7 @@ class EfficientGlobalOptimization(
 
 
 # Added below so that we can force L-BFGS-B to use the most recently queried point as one of the starting points for
-# optimising, which will hopefully reduce number of optimisation failures.
+# optimising, and prevent penalty from becoming too small and causing optimisation to fail.
 class ALEfficientGlobalOptimization(
     AcquisitionRule[TensorType, SearchSpaceType, ProbabilisticModelType]
 ):
@@ -372,7 +372,7 @@ class ALEfficientGlobalOptimization(
     @overload
     def __init__(
         self: "ALEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModelType]",
-        builder: BatchThompsonSamplingAugmentedLagrangian,
+        builder: BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType],
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,
@@ -381,7 +381,7 @@ class ALEfficientGlobalOptimization(
 
     def __init__(
         self,
-        builder: Optional[BatchThompsonSamplingAugmentedLagrangian] = None,
+        builder: Optional[BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType]] = None,
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,

@@ -356,7 +356,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         equality_lambda: Optional[Mapping[Tag, TensorType]] = None,
         batch_size: int = 1,
         penalty: TensorType = None,
-        epsilon: float = 0.001,
+        epsilon: float = 0.01,
         update_lagrange_via_kkt: bool = False,
         search_space: Optional[SearchSpace] = None,
         plot: bool = False,
@@ -371,7 +371,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         :param inequality_lambda: Initial values for Lagrange multipliers of inequality constraints.
         :param equality_lambda: Initial values for Lagrange multipliers of equality constraints.
         :param penalty: Initial penalty. If None, it is set to a default value using the _get_initial_penalty method.
-        :param epsilon: Bound within which constraints are considered to be satisfied.
+        :param epsilon: Bound within which equality constraints are considered to be satisfied.
         :param update_lagrange_via_kkt: Whether to update Lagrange multipliers with a gradient-based approach based on
                                         KKT conditions
         :param search_space: The global search space over which the optimisation is defined. This is
@@ -492,6 +492,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                 else:
                     all_satisfied = tf.logical_and(all_satisfied, constraint_satisfied)
 
+                # Only consider invalid inequality constraints (i.e. > 0)
                 constraint_squared = tf.square(tf.nn.relu(tf.squeeze(datasets[tag].observations)))
                 if sum_squared is None:
                     sum_squared = constraint_squared
@@ -791,10 +792,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                 inequality_constraint_val = datasets[tag].observations[-self._batch_size:][None, ...]  # [1, B, 1]
                 tf.debugging.assert_shapes([(inequality_constraint_val, (1, None, 1))])
 
-                # If close to zero (but not less than zero), we consider it satisfied so penalty doesn't get updated too
-                # frequently - otherwise optimiser sometimes fails
                 batch_inequality_constraints_violated = tf.logical_or(batch_inequality_constraints_violated,
-                                                                      inequality_constraint_val > self._epsilon)  # See if any of the constraints are violated
+                                                                      inequality_constraint_val > 0)  # See if any of the constraints are violated
                 if tf.reduce_sum(tf.cast(batch_inequality_constraints_violated, tf.int8)) != 0:
                     inequality_constraints_satisfied = False
 
@@ -840,15 +839,13 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             self,
             x: tf.Tensor) -> tf.Tensor:
         """
-        Thus, with leading dimensions, they take input shape `[..., B, D]` and returns shape `[..., B]`.
-        Form augmented Lagrangian from given objective and constraints
-        :param x: Array of points at which to evaluate the augmented Lagrangian of shape [N, B, M] (middle axis is for batching
+        Form augmented Lagrangian
+        :param x: Array of points at which to evaluate the augmented Lagrangian of shape [N, B, D] (middle axis is for batching
                   when calling the sampled trajectories)
         :return: Values of augmented Lagrangian at given x values of shape [N, B]
         """
         objective_vals = self._objective_trajectory(x)
 
-        # TODO: Test out equality code below
         sum_equality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         if self._equality_constraint_prefix is not None:
@@ -894,7 +891,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         :return: Optimal slack values at each x location, of shape [N, B, 1]
         """
         tf.debugging.assert_rank(inequality_constraint_vals, 3)
-        slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals
+        slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals  # TODO: Perhaps make broadcasting explicit?
         slack_vals_non_neg = tf.nn.relu(slack_vals)
         tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])
         return slack_vals_non_neg
