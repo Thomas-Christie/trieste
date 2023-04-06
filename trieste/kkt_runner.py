@@ -8,9 +8,9 @@ from trieste.space import Box
 from functions import constraints
 from functions import objectives
 
-NUM_INITIAL_SAMPLES = 6
+NUM_INITIAL_SAMPLES = 10
 BATCH_SIZE = 1
-NUM_BO_ITERS = 20
+NUM_BO_ITERS = 100
 OBJECTIVE = "OBJECTIVE"
 INEQUALITY_CONSTRAINT_ONE = "INEQUALITY_CONSTRAINT_ONE"
 INEQUALITY_CONSTRAINT_TWO = "INEQUALITY_CONSTRAINT_TWO"
@@ -48,25 +48,53 @@ def create_model(data):
 #     with open(f"../results/13-03-23/data.pkl", "wb") as fp:
 #         pickle.dump(data, fp)
 
+
 # Run with updated EGO algorithm, modified for KKT EI acquisition function
+# if __name__ == "__main__":
+#     for run in range(20):
+#         search_space = Box([0.0, 0.0], [1.0, 1.0])
+#         observer = trieste.objectives.utils.mk_multi_observer(
+#             OBJECTIVE=objectives.linear_objective,
+#             INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
+#             INEQUALITY_CONSTRAINT_TWO=constraints.toy_constraint_two)
+#
+#         initial_inputs = search_space.sample(NUM_INITIAL_SAMPLES)
+#         initial_data = observer(initial_inputs)
+#
+#         initial_models = trieste.utils.map_values(create_model, initial_data)
+#
+#         kkt_expected_improvement = KKTExpectedImprovement(OBJECTIVE, "INEQUALITY", None, 0.001, search_space, False)
+#
+#         rule = KKTEfficientGlobalOptimization(kkt_expected_improvement, optimizer=generate_continuous_optimizer(), epsilon=EI_EPSILON)
+#
+#         kkt_bo = trieste.kkt_bayesian_optimizer.KKTBayesianOptimizer(observer, search_space)
+#         data = kkt_bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True, initial_alpha=INITIAL_ALPHA, alpha_lower_bound=ALPHA_LOWER_BOUND).try_get_final_datasets()
+#         # with open(f"../results/14-03-23/multi_run_experiment_two/run_{run}_data.pkl", "wb") as fp:
+#         #     pickle.dump(data, fp)
+
+# GSBP Problem
 if __name__ == "__main__":
     for run in range(20):
         search_space = Box([0.0, 0.0], [1.0, 1.0])
         observer = trieste.objectives.utils.mk_multi_observer(
-            OBJECTIVE=objectives.linear_objective,
+            OBJECTIVE=objectives.goldstein_price,
             INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-            INEQUALITY_CONSTRAINT_TWO=constraints.toy_constraint_two)
+            EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
+            EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint)
 
         initial_inputs = search_space.sample(NUM_INITIAL_SAMPLES)
         initial_data = observer(initial_inputs)
 
         initial_models = trieste.utils.map_values(create_model, initial_data)
 
-        kkt_expected_improvement = KKTExpectedImprovement(OBJECTIVE, "INEQUALITY", None, 0.001, search_space, False)
+        kkt_expected_improvement = KKTExpectedImprovement(OBJECTIVE, "INEQUALITY", "EQUALITY", 0.001, search_space, False)
 
-        rule = KKTEfficientGlobalOptimization(kkt_expected_improvement, optimizer=generate_continuous_optimizer(), epsilon=EI_EPSILON)
+        rule = KKTEfficientGlobalOptimization(kkt_expected_improvement, optimizer=generate_continuous_optimizer(),
+                                              epsilon=EI_EPSILON)
 
         kkt_bo = trieste.kkt_bayesian_optimizer.KKTBayesianOptimizer(observer, search_space)
-        data = kkt_bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True, initial_alpha=INITIAL_ALPHA, alpha_lower_bound=ALPHA_LOWER_BOUND).try_get_final_datasets()
-        with open(f"../results/14-03-23/multi_run_experiment_two/run_{run}_data.pkl", "wb") as fp:
-            pickle.dump(data, fp)
+        data = kkt_bo.optimize(NUM_BO_ITERS, initial_data, initial_models, rule, track_state=True,
+                               initial_alpha=INITIAL_ALPHA,
+                               alpha_lower_bound=ALPHA_LOWER_BOUND).try_get_final_datasets()
+        # with open(f"../results/14-03-23/multi_run_experiment_two/run_{run}_data.pkl", "wb") as fp:
+        #     pickle.dump(data, fp)
