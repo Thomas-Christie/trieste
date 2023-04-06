@@ -243,7 +243,7 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         for i in range(num_x_vals):
             point_inequality_grad_dict = {}
             point_equality_grad_dict = {}
-            point_mle_objective_grad = mle_objective_grad[i][..., None]
+            point_mle_objective_grad = mle_objective_grad[i][..., None]  # [D, 1]
 
             # Calculate inequality constraint gradients
             for tag, _ in self._inequality_constraint_models.items():
@@ -768,3 +768,320 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
 
         plt.tight_layout()
         plt.show()
+
+
+# Combine KKT conditions with Expected Improvement for constrained optimisation
+# as done in https://pure.uvt.nl/ws/portalfiles/portal/63795955/2022_022.pdf, but use
+# Thompson samples of constraints for calculating gradients of constraint functions.
+class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType]):
+    """
+    Builder for an augmented Lagrangian acquisition function using Thompson sampling.
+    """
+
+    def __init__(self, objective_tag: Tag, inequality_constraint_prefix: Optional[Tag] = None,
+                 equality_constraint_prefix: Optional[Tag] = None, epsilon=0.001,
+                 search_space: Optional[SearchSpace] = None, plot: bool = False):
+        """
+        :param objective_tag: The tag for the objective data and model.
+        :param inequality_constraint_prefix: Prefix of tags for inequality constraint data/models/Lagrange multipliers.
+        :param equality_constraint_prefix: Prefix for tags for equality constraint data/models/Lagrange multipliers.
+        :param epsilon: Bound within which equality constraints are considered to be satisfied.
+        :param search_space: The global search space over which the optimisation is defined. This is
+            only used to determine explicit constraints.
+        :param plot: Whether to plot the modelled functions at each iteration of BayesOpt.
+        """
+        super().__init__()
+        self._equality_constraint_trajectories = {}
+        self._equality_constraint_trajectory_samplers = {}
+        self._inequality_constraint_trajectories = {}
+        self._inequality_constraint_trajectory_samplers = {}
+        self._objective_model = None
+        self._objective_tag = objective_tag
+        self._inequality_constraint_prefix = inequality_constraint_prefix
+        self._equality_constraint_prefix = equality_constraint_prefix
+        self._epsilon = epsilon
+        self._search_space = search_space
+        self._augmented_lagrangian_fn = None
+        self._plot = plot
+        self._iteration = 0
+        # TODO: Think of better way to do below
+        self.best_valid_observation = 1000  # For when we haven't yet found any valid points
+        self._kkt_expected_improvement_fn = None
+
+    def __repr__(self) -> str:
+        """"""
+        return (
+            f"KKTThompsonSamplingExpectedImprovement({self._objective_tag!r}, {self._inequality_constraint_prefix!r},"
+            f" {self._equality_constraint_prefix!r}, {self._search_space!r})"
+        )
+
+    def prepare_acquisition_function(
+        self,
+        models: Mapping[Tag, HasTrajectorySampler],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> AcquisitionFunction:
+        """
+        :param models: The models over each tag.
+        :param datasets: The data from the observer.
+        :return: The augmented Lagrangian function, using Thompson sampling to approximate all unknown functions.
+        :raise KeyError: If `objective_tag` is not found in ``datasets`` and ``models``.
+        :raise tf.errors.InvalidArgumentError: If the objective data is empty.
+        """
+        tf.debugging.Assert(datasets is not None, [tf.constant([])])
+        self._iteration += 1
+        print(f"Iteration: {self._iteration}")
+
+        # Find the best valid objective value seen so far
+        satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
+        for tag, dataset in datasets.items():
+            if (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = constraint_vals <= 0
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+            elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = tf.abs(constraint_vals) <= self._epsilon
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+
+        if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+            objective_vals = datasets[self._objective_tag].observations
+            valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
+            self.best_valid_observation = tf.math.reduce_min(valid_y)
+
+        for tag, model in models.items():
+            if tag.startswith(self._objective_tag):
+                self._objective_model = copy.deepcopy(model)
+            elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                sampler = model.trajectory_sampler()
+                trajectory = sampler.get_trajectory()
+                self._equality_constraint_trajectory_samplers[tag] = sampler
+                self._equality_constraint_trajectories[tag] = trajectory
+            elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                sampler = model.trajectory_sampler()
+                trajectory = sampler.get_trajectory()
+                self._inequality_constraint_trajectory_samplers[tag] = sampler
+                self._inequality_constraint_trajectories[tag] = trajectory
+
+        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+
+        return self._kkt_expected_improvement_fn
+
+    def update_acquisition_function(
+        self,
+        function: AcquisitionFunction,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> AcquisitionFunction:
+        """
+        :param function: The acquisition function to update.
+        :param models: The models for each tag.
+        :param datasets: The data from the observer.
+        :return: The augmented Lagrangian function, updating sampled unknown functions (ideally with decoupled sampling).
+        """
+        tf.debugging.Assert(datasets is not None, [tf.constant([])])
+        self._iteration += 1
+        print(f"Iteration: {self._iteration}")
+        datasets = cast(Mapping[Tag, Dataset], datasets)
+
+        objective_dataset = datasets[self._objective_tag]
+
+        tf.debugging.assert_positive(
+            len(objective_dataset),
+            message="Lagrange multiplier updates are defined with respect to existing points in the"
+            " objective data, but the objective data is empty.",
+        )
+
+        # Last point in dataset is most recent estimate of optimal x value
+        most_recent_observation = datasets[self._objective_tag].observations[-1]
+        most_recent_query_point = datasets[self._objective_tag].query_points[-1]
+        print(f"Most Recent Query Point: {most_recent_query_point} Most Recent Observation: {most_recent_observation}")
+
+        # Check to see if most recent observation is valid and better than previously seen observations
+        all_constraints_satisfied = True
+        for tag, dataset in datasets.items():
+            if (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                constraint_val = dataset.observations[-1]
+                constraint_satisfied = constraint_val <= 0
+                all_constraints_satisfied = all_constraints_satisfied and constraint_satisfied
+            elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                constraint_val = dataset.observations[-1]
+                constraint_satisfied = tf.abs(constraint_val) <= self._epsilon
+                all_constraints_satisfied = all_constraints_satisfied and constraint_satisfied
+
+        if all_constraints_satisfied:
+            self.best_valid_observation = min(self.best_valid_observation, most_recent_observation)
+
+        # Plot Models
+        if self._plot:
+            self._plot_models(most_recent_query_point)
+
+        # Update models
+        # TODO: Currently using deepcopy for producing consistent plots, may remove in future
+
+        self._objective_model = copy.deepcopy(models[self._objective_tag])
+        for tag, sampler in self._inequality_constraint_trajectory_samplers.items():
+            old_trajectory = self._inequality_constraint_trajectories[tag]
+            updated_trajectory = sampler.update_trajectory(old_trajectory)
+            self._inequality_constraint_trajectories[tag] = updated_trajectory
+
+        for tag, sampler in self._equality_constraint_trajectory_samplers.items():
+            old_trajectory = self._equality_constraint_trajectories[tag]
+            updated_trajectory = sampler.update_trajectory(old_trajectory)
+            self._equality_constraint_trajectories[tag] = updated_trajectory
+
+        print(f"Best Valid Observation: {self.best_valid_observation}")
+        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+
+        return self._kkt_expected_improvement_fn
+
+    def _efficient_kkt_expected_improvement(self,
+                                  x: tf.Tensor) -> tf.Tensor:
+        """
+        Form KKT expected improvement from objective and constraints
+        :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, M]
+        """
+        tf.debugging.assert_shapes(
+            [(x, [..., 1, None])],
+            message="This acquisition function only supports batch sizes of one.",
+        )
+
+        # Standard GP prediction takes tensor of shape [N, D]
+        squeezed_x = tf.squeeze(x, -2)
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch(squeezed_x)
+            objective_mean, objective_var = self._objective_model.predict(squeezed_x)
+        mle_objective_grad = tape.gradient(objective_mean, squeezed_x)  # [N, D]
+        tf.debugging.assert_shapes([(mle_objective_grad, [..., 2])])
+        normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
+
+        # TODO: Double check expected improvement definition
+        expected_improvement = (self.best_valid_observation - objective_mean) * normal.cdf(self.best_valid_observation) + objective_var * normal.prob(self.best_valid_observation)
+        num_x_vals = x.shape[0]
+        cosine_similarities = []
+
+        inequality_constraint_grad_dict = {}
+        inequality_constraint_bind_dict = {}
+        for tag, trajectory in self._inequality_constraint_trajectories.items():
+            with tf.GradientTape(persistent=True) as tape:
+                tape.watch(x)
+                constraint_vals = trajectory(x)  # [N, B, 1]
+            # Only want to consider side of feasibility boundary where inequality constraints are actually satisfied
+            binding = tf.logical_and(constraint_vals <= 0, tf.abs(constraint_vals) <= self._epsilon)
+            constraint_grad = tf.squeeze(tape.gradient(constraint_vals, x), axis=1)
+            inequality_constraint_grad_dict[tag] = constraint_grad
+            inequality_constraint_bind_dict[tag] = binding
+
+        equality_constraint_grad_dict = {}
+        equality_constraint_bind_dict = {}
+        for tag, trajectory in self._equality_constraint_trajectories.items():
+            with tf.GradientTape(persistent=True) as tape:
+                tape.watch(x)
+                constraint_vals = trajectory(x)  # [N, B, 1]
+            binding = tf.abs(constraint_vals) <= self._epsilon
+            constraint_grad = tf.squeeze(tape.gradient(constraint_vals, x), axis=1)
+            equality_constraint_grad_dict[tag] = constraint_grad
+            equality_constraint_bind_dict[tag] = binding
+
+        for i in range(num_x_vals):
+            point_inequality_grad_dict = {}
+            point_equality_grad_dict = {}
+            point_mle_objective_grad = mle_objective_grad[i][..., None]
+
+            # Calculate inequality constraint gradients
+            for tag, _ in self._inequality_constraint_trajectories.items():
+                binding = inequality_constraint_bind_dict[tag][i]
+                # Only consider binding constraints
+                if binding:
+                    point_constraint_grad = inequality_constraint_grad_dict[tag][i]
+                    point_inequality_grad_dict[tag] = point_constraint_grad
+
+            # Calculate equality constraint gradients
+            for tag, _ in self._equality_constraint_trajectories.items():
+                binding = equality_constraint_bind_dict[tag][i]
+                # Only consider binding constraints
+                if binding:
+                    point_constraint_grad = equality_constraint_grad_dict[tag][i]
+                    point_equality_grad_dict[tag] = point_constraint_grad
+
+            # Construct gradient matrix
+            gradient_matrix = None
+
+            for tag, gradient in point_inequality_grad_dict.items():
+                if gradient_matrix is None:
+                    gradient_matrix = gradient[..., None]
+                else:
+                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
+
+            for tag, gradient in point_equality_grad_dict.items():
+                if gradient_matrix is None:
+                    gradient_matrix = gradient[..., None]
+                else:
+                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
+
+            num_binding_inequality_constraints = len(point_inequality_grad_dict)
+            if gradient_matrix is None:
+                # No constraints are considered binding, so unlikely to be optimal point
+                cosine_similarities.append(0)
+            else:
+                lagrange_multipliers = tf.linalg.lstsq(gradient_matrix, -point_mle_objective_grad)
+                if num_binding_inequality_constraints > 0:
+                    # Enforce non-negativity of inequality constraint Lagrange multipliers
+                    inequality_indices = tf.Variable([[i] for i in range(num_binding_inequality_constraints)])
+                    lagrange_multipliers = tf.tensor_scatter_nd_update(lagrange_multipliers, inequality_indices, tf.nn.relu(lagrange_multipliers)[:num_binding_inequality_constraints])
+                ls_objective_grad = - tf.matmul(gradient_matrix, lagrange_multipliers)
+                normalized_mle_objective_grad = tf.math.l2_normalize(point_mle_objective_grad, axis=0)
+                normalized_ls_objective_grad = tf.math.l2_normalize(ls_objective_grad, axis=0)
+                cosine_similarity = tf.reduce_sum(tf.multiply(normalized_mle_objective_grad, normalized_ls_objective_grad))
+                cosine_similarities.append(cosine_similarity)
+
+        cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
+        assert (expected_improvement.shape == cosine_similarities.shape)
+        return tf.multiply(cosine_similarities, expected_improvement)
+
+    def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
+        """
+        Get expected improvement at given point. Used when testing if the point returned by the acquisition function
+        has sufficiently large expected improvement.
+        """
+        # TODO: Improve docstring
+        tf.debugging.assert_shapes(
+            [(x, [1, None])],
+            message="This acquisition function only supports batch sizes of one.",
+        )
+        print(f"Expected improvement query x: {x}, shape: {x.shape}")
+
+        objective_mean, objective_var = self._objective_model.predict(x)
+        normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
+        expected_improvement = (self.best_valid_observation - objective_mean) * normal.cdf(self.best_valid_observation) + objective_var * normal.prob(self.best_valid_observation)
+        return expected_improvement
+
+    def get_satisfied_objective_values(self, x: tf.Tensor) -> tf.Tensor:
+        """
+        Returns objective value functions where Thompson samples of the constraints are satisfied. Where not satisfied,
+        replaces true function value with arbitrary large function value.
+        """
+        # TODO: Improve docstring
+        tf.debugging.assert_shapes(
+            [(x, [..., 1, None])],
+            message="This acquisition function only supports batch sizes of one.",
+        )
+
+        objective_mean, objective_var = self._objective_model.predict(tf.squeeze(x, -2))
+        satisfied_objective_values = objective_mean  # [N, 1]
+
+        satisfied = tf.constant(True, shape=satisfied_objective_values.shape)
+        for tag, trajectory in self._inequality_constraint_trajectories.items():
+            constraint_vals = tf.squeeze(trajectory(x), axis=-2)
+            satisfied = tf.logical_and(satisfied, constraint_vals <= 0)
+            assert (satisfied_objective_values.shape == satisfied.shape)
+
+        for tag, trajectory in self._equality_constraint_trajectories.items():
+            constraint_vals = tf.squeeze(trajectory.predict(x), axis=-2)
+            satisfied = tf.logical_and(satisfied, tf.abs(constraint_vals) <= self._epsilon)
+            assert (satisfied_objective_values.shape == satisfied.shape)
+
+        # Where not satisfied, give large value so doesn't get chosen
+        satisfied_objective_values = tf.where(satisfied, satisfied_objective_values, 1000)  # TODO - Remove hard-coded bad value
+
+        # The optimiser maximises function given, so in order to find the minimum we need to negate
+        return - satisfied_objective_values
