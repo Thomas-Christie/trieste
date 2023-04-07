@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from functools import partial
 from typing import Mapping, Optional, cast
 from scipy.stats import norm
 import matplotlib.pyplot as plt
@@ -22,12 +23,12 @@ from ..interface import (
 # as done in https://pure.uvt.nl/ws/portalfiles/portal/63795955/2022_022.pdf
 class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelType]):
     """
-    Builder for an augmented Lagrangian acquisition function using Thompson sampling.
+    Builder for an acquisition function combining the KKT conditions and Expected Improvement.
     """
 
     def __init__(self, objective_tag: Tag, inequality_constraint_prefix: Optional[Tag] = None,
                  equality_constraint_prefix: Optional[Tag] = None, epsilon=0.001,
-                 search_space: Optional[SearchSpace] = None, plot: bool = False):
+                 search_space: Optional[SearchSpace] = None, feasible_region_only : bool = False, plot: bool = False):
         """
         :param objective_tag: The tag for the objective data and model.
         :param inequality_constraint_prefix: Prefix of tags for inequality constraint data/models/Lagrange multipliers.
@@ -40,17 +41,18 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         super().__init__()
         self._equality_constraint_models = {}
         self._inequality_constraint_models = {}
-        self._objective_model = {}
+        self._objective_model = None
         self._objective_tag = objective_tag
         self._inequality_constraint_prefix = inequality_constraint_prefix
         self._equality_constraint_prefix = equality_constraint_prefix
         self._epsilon = epsilon
         self._search_space = search_space
         self._augmented_lagrangian_fn = None
+        self._feasible_region_only = feasible_region_only
         self._plot = plot
         self._iteration = 0
         # TODO: Think of better way to do below
-        self.best_valid_observation = 1000  # For when we haven't yet found any valid points
+        self.best_valid_observation = 10  # For when we haven't yet found any valid points
         self._kkt_expected_improvement_fn = None
         self._alpha = None
 
@@ -107,9 +109,9 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
 
         # Plot Models
         if self._plot:
-            self._plot_models(tf.Variable([0.0, 0.0]))
+            self._plot_models([0.0, 0.0])
 
-        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+        self._kkt_expected_improvement_fn = partial(self._efficient_kkt_expected_improvement, False)
 
         return self._kkt_expected_improvement_fn
 
@@ -187,21 +189,24 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         print(f"Inequality Constraint One Prediction @ Optimum: {ineq_one_mean} Var: {ineq_one_var}, Std: {tf.sqrt(ineq_one_var)}")
         print(f"Considered Binding: {binding} (Val: {tf.abs(ineq_one_mean) / tf.sqrt(ineq_one_var)}) Relaxed Binding: {relaxed_binding} Very Relaxed Binding: {very_relaxed_binding}")
         print(f"Best Valid Observation: {self.best_valid_observation}")
-        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+        self._kkt_expected_improvement_fn = partial(self._efficient_kkt_expected_improvement, False)
 
         return self._kkt_expected_improvement_fn
 
     def _efficient_kkt_expected_improvement(self,
-                                  x: tf.Tensor) -> tf.Tensor:
+                                            return_separate_components: bool,
+                                            x: tf.Tensor) -> tf.Tensor | (tf.Tensor, tf.Tensor):
         """
         Form KKT expected improvement from objective and constraints
+        :param: return_separate_components: Whether to return cosine similarity and expected improvement separately (
+                sometimes used for plotting purposes).
         :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, M]
         """
         tf.debugging.assert_shapes(
             [(x, [..., 1, None])],
             message="This acquisition function only supports batch sizes of one.",
         )
-        x = tf.squeeze(x, -2)
+        x = tf.squeeze(x, -2)  # [N, D]
 
         with tf.GradientTape(persistent=True) as tape:
             tape.watch(x)
@@ -217,28 +222,29 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
 
         inequality_constraint_grad_dict = {}
         inequality_constraint_bind_dict = {}
+        inequality_constraints_satisfied = tf.constant(True, shape=(x.shape[0], 1))  # [N, 1]
         for tag, model in self._inequality_constraint_models.items():
             with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x)
                 constraint_pred_mean, constraint_pred_var = model.predict(x)
             binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= norm.ppf(1 - self._alpha/2)
+            inequality_constraints_satisfied = tf.logical_and(inequality_constraints_satisfied, constraint_pred_mean <= 0)
             constraint_grad = tape.gradient(constraint_pred_mean, x)
             inequality_constraint_grad_dict[tag] = constraint_grad
             inequality_constraint_bind_dict[tag] = binding
 
         equality_constraint_grad_dict = {}
         equality_constraint_bind_dict = {}
+        all_equality_constraints_binding = tf.constant(True, shape=(x.shape[0], 1))
         for tag, model in self._equality_constraint_models.items():
             with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x)
                 constraint_pred_mean, constraint_pred_var = model.predict(x)
             binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= norm.ppf(1 - self._alpha/2)
+            all_equality_constraints_binding = tf.logical_and(all_equality_constraints_binding, binding)
             constraint_grad = tape.gradient(constraint_pred_mean, x)
             equality_constraint_grad_dict[tag] = constraint_grad
             equality_constraint_bind_dict[tag] = binding
-
-        # print(f"EQUALITY ONE: {equality_constraint_grad_dict['EQUALITY_CONSTRAINT_ONE']}")
-        # print(f"EQUALITY TWO: {equality_constraint_grad_dict['EQUALITY_CONSTRAINT_TWO']}")
 
         for i in range(num_x_vals):
             point_inequality_grad_dict = {}
@@ -295,112 +301,20 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
 
         cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
         assert (expected_improvement.shape == cosine_similarities.shape)
-        return tf.multiply(cosine_similarities, expected_improvement)
-
-    def _efficient_kkt_expected_improvement_separate(self,
-                                  x: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        """
-        Form KKT expected improvement from objective and constraints for plotting (returning cosine similarities and
-        expected improvement separately)
-        :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, M]
-        """
-        tf.debugging.assert_shapes(
-            [(x, [..., 1, None])],
-            message="This acquisition function only supports batch sizes of one.",
-        )
-        x = tf.squeeze(x, -2)
-
-        with tf.GradientTape(persistent=True) as tape:
-            tape.watch(x)
-            objective_mean, objective_var = self._objective_model.predict(x)
-        mle_objective_grad = tape.gradient(objective_mean, x)
-        tf.debugging.assert_shapes([(mle_objective_grad, [..., 2])])
-        normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
-
-        # TODO: Double check expected improvement definition
-        expected_improvement = (self.best_valid_observation - objective_mean) * normal.cdf(self.best_valid_observation) + objective_var * normal.prob(self.best_valid_observation)
-        num_x_vals = x.shape[0]
-        cosine_similarities = []
-
-        inequality_constraint_grad_dict = {}
-        inequality_constraint_bind_dict = {}
-        for tag, model in self._inequality_constraint_models.items():
-            with tf.GradientTape(persistent=True) as tape:
-                tape.watch(x)
-                constraint_pred_mean, constraint_pred_var = model.predict(x)
-            binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= norm.ppf(1 - self._alpha/2)
-            constraint_grad = tape.gradient(constraint_pred_mean, x)
-            inequality_constraint_grad_dict[tag] = constraint_grad
-            inequality_constraint_bind_dict[tag] = binding
-
-        equality_constraint_grad_dict = {}
-        equality_constraint_bind_dict = {}
-        for tag, model in self._equality_constraint_models.items():
-            with tf.GradientTape(persistent=True) as tape:
-                tape.watch(x)
-                constraint_pred_mean, constraint_pred_var = model.predict(x)
-            binding = tf.abs(constraint_pred_mean) / tf.sqrt(constraint_pred_var) <= norm.ppf(1 - self._alpha / 2)
-            constraint_grad = tape.gradient(constraint_pred_mean, x)
-            equality_constraint_grad_dict[tag] = constraint_grad
-            equality_constraint_bind_dict[tag] = binding
-
-        for i in range(num_x_vals):
-            point_inequality_grad_dict = {}
-            point_equality_grad_dict = {}
-            point_mle_objective_grad = mle_objective_grad[i][..., None]
-
-            # Calculate inequality constraint gradients
-            for tag, _ in self._inequality_constraint_models.items():
-                binding = inequality_constraint_bind_dict[tag][i]
-                # Only consider binding constraints
-                if binding:
-                    point_constraint_grad = inequality_constraint_grad_dict[tag][i]
-                    point_inequality_grad_dict[tag] = point_constraint_grad
-
-            # Calculate equality constraint gradients
-            for tag, _ in self._equality_constraint_models.items():
-                binding = equality_constraint_bind_dict[tag][i]
-                # Only consider binding constraints
-                if binding:
-                    point_constraint_grad = equality_constraint_grad_dict[tag][i]
-                    point_equality_grad_dict[tag] = point_constraint_grad
-
-            # Construct gradient matrix
-            gradient_matrix = None
-
-            for tag, gradient in point_inequality_grad_dict.items():
-                if gradient_matrix is None:
-                    gradient_matrix = gradient[..., None]
-                else:
-                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
-
-            for tag, gradient in point_equality_grad_dict.items():
-                if gradient_matrix is None:
-                    gradient_matrix = gradient[..., None]
-                else:
-                    gradient_matrix = tf.concat((gradient_matrix, gradient[..., None]), axis=1)
-
-            num_binding_inequality_constraints = len(point_inequality_grad_dict)
-            if gradient_matrix is None:
-                # No constraints are considered binding, so unlikely to be optimal point
-                cosine_similarities.append(0)
+        assert (all_equality_constraints_binding.shape == expected_improvement.shape)
+        assert (inequality_constraints_satisfied.shape == expected_improvement.shape)
+        all_equality_constraints_binding = tf.cast(all_equality_constraints_binding, tf.float64)
+        inequality_constraints_satisfied = tf.cast(inequality_constraints_satisfied, tf.float64)
+        if return_separate_components:
+            if self._feasible_region_only:
+                return cosine_similarities, all_equality_constraints_binding * inequality_constraints_satisfied * expected_improvement
             else:
-                # TODO: Should we enforce non-negativity of inequality constraint Lagrange multipliers? Currently we are
-                lagrange_multipliers = tf.linalg.lstsq(gradient_matrix, -point_mle_objective_grad)
-                # lagrange_multipliers = tf.linalg.inv(tf.matmul(gradient_matrix, gradient_matrix, transpose_a=True)) @ tf.transpose(gradient_matrix) @ (-point_mle_objective_grad)
-                if num_binding_inequality_constraints > 0:
-                    # Enforce non-negativity of inequality constraint Lagrange multipliers
-                    inequality_indices = tf.Variable([[i] for i in range(num_binding_inequality_constraints)])
-                    lagrange_multipliers = tf.tensor_scatter_nd_update(lagrange_multipliers, inequality_indices, tf.nn.relu(lagrange_multipliers)[:num_binding_inequality_constraints])
-                ls_objective_grad = - tf.matmul(gradient_matrix, lagrange_multipliers)
-                normalized_mle_objective_grad = tf.math.l2_normalize(point_mle_objective_grad, axis=0)
-                normalized_ls_objective_grad = tf.math.l2_normalize(ls_objective_grad, axis=0)
-                cosine_similarity = tf.reduce_sum(tf.multiply(normalized_mle_objective_grad, normalized_ls_objective_grad))
-                cosine_similarities.append(cosine_similarity)
-
-        cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
-        assert (expected_improvement.shape == cosine_similarities.shape)
-        return cosine_similarities, expected_improvement
+                return cosine_similarities, all_equality_constraints_binding * expected_improvement
+        else:
+            if self._feasible_region_only:
+                return all_equality_constraints_binding * inequality_constraints_satisfied * cosine_similarities * expected_improvement
+            else:
+                return all_equality_constraints_binding * cosine_similarities * expected_improvement
 
     def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
         """
@@ -712,7 +626,6 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
     #         plt.savefig(fp)
     #     plt.show()
 
-
     def _plot_models(self, prev_query_point):
         """
         Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
@@ -723,64 +636,84 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         y_list = tf.linspace(0, 1, 100)
         xs, ys = tf.meshgrid(x_list, y_list)
         coordinates = tf.expand_dims(tf.stack((tf.reshape(xs, [-1]), tf.reshape(ys, [-1])), axis=1), -2)
-
-        with tf.GradientTape(persistent=True) as tape:
-            tape.watch(coordinates)
-            cons_one_mean, cons_one_var = self._equality_constraint_models["EQUALITY_CONSTRAINT_ONE"].predict(coordinates)
-        cons_one_grad = tape.gradient(cons_one_mean, coordinates)
-
-        with tf.GradientTape(persistent=True) as tape:
-            tape.watch(coordinates)
-            cons_two_mean, cons_two_var = self._equality_constraint_models["EQUALITY_CONSTRAINT_TWO"].predict(coordinates)
-        cons_two_grad = tape.gradient(cons_two_mean, coordinates)
-
-        print(f"Original Shape: {tf.cast(cons_one_grad - cons_two_grad == 0, dtype=tf.int8).shape}")
-        print(tf.reduce_sum(tf.cast(cons_one_grad - cons_two_grad == 0, dtype=tf.int8), axis=0))
-        print(f"Cons One Grad Shape: {cons_one_grad.shape}")
-        print(f"Normalised Cons One Grad: {tf.norm(cons_one_grad, axis=2).shape}")
-        fig, (ax1, ax2) = plt.subplots(2, 2, figsize=(15, 7))
-
-        constraint_one_plot = ax1[0].contourf(xs, ys, tf.reshape(cons_one_mean, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        objective_pred, _ = self._objective_model.predict(coordinates)
+        cosine_similarities, expected_improvement = self._efficient_kkt_expected_improvement(True, coordinates)
+        kkt_ei_pred = tf.multiply(cosine_similarities, expected_improvement)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 3, figsize=(15, 12))
+        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
         ax1[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
-        fig.colorbar(constraint_one_plot)
-        ax1[0].set_xlabel("EQUALITY CONSTRAINT ONE MEAN")
+        ax1[0].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(objective_plot)
+        ax1[0].set_xlabel("OBJECTIVE")
 
-        cons_one_std_plot = ax1[1].contourf(xs, ys, tf.reshape(tf.sqrt(cons_one_var), [y_list.shape[0], x_list.shape[0]]),
-                                            levels=500, extend="both")
-        ax1[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
-        ax1[1].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
-        fig.colorbar(cons_one_std_plot)
-        ax1[1].set_xlabel("EQUALITY CONSTRAINT ONE STD")
-
-        constraint_two_plot = ax2[0].contourf(xs, ys, tf.reshape(cons_two_mean, [y_list.shape[0], x_list.shape[0]]),
+        constraint_one_pred, _ = self._inequality_constraint_models["INEQUALITY_CONSTRAINT_ONE"].predict(coordinates)
+        constraint_one_plot = ax1[1].contourf(xs, ys, tf.reshape(constraint_one_pred, [y_list.shape[0], x_list.shape[0]]),
                                               levels=500)
-        ax2[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
-        fig.colorbar(constraint_two_plot)
-        ax2[0].set_xlabel("EQUALITY CONSTRAINT TWO MEAN")
+        ax1[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        ax1[1].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(constraint_one_plot)
+        ax1[1].set_xlabel("INEQUALITY CONSTRAINT ONE")
 
-        cons_two_std_plot = ax2[1].contourf(xs, ys,
-                                            tf.reshape(tf.sqrt(cons_two_var), [y_list.shape[0], x_list.shape[0]]),
-                                            levels=500, extend="both")
+        equality_constraint_one_pred, _ = self._equality_constraint_models["EQUALITY_CONSTRAINT_ONE"].predict(coordinates)
+        equality_constraint_one_plot = ax1[2].contourf(xs, ys, tf.reshape(equality_constraint_one_pred, [y_list.shape[0], x_list.shape[0]]),
+                                                       levels=500)
+        ax1[2].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        ax1[2].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(equality_constraint_one_plot)
+        ax1[2].set_xlabel("EQUALITY CONSTRAINT ONE")
+
+        kkt_plot = ax2[0].contourf(xs, ys, tf.reshape(kkt_ei_pred, [y_list.shape[0], x_list.shape[0]]), levels= 500, extend="both")
+        ax2[0].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        ax2[0].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(kkt_plot)
+        ax2[0].set_xlabel("KKT Expected Improvement)")
+
+        cosine_plot = ax2[1].contourf(xs, ys, tf.reshape(cosine_similarities, [y_list.shape[0], x_list.shape[0]]), levels=500,
+                                   extend="both")
         ax2[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
-        ax2[1].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
-        fig.colorbar(cons_two_std_plot)
-        ax2[1].set_xlabel("EQUALITY CONSTRAINT TWO STD")
+        ax2[1].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(cosine_plot)
+        ax2[1].set_xlabel("Cosine Similarities")
+
+        ei_plot = ax2[2].contourf(xs, ys, tf.reshape(expected_improvement, [y_list.shape[0], x_list.shape[0]]),
+                                      levels=500,
+                                      extend="both")
+        ax2[2].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        ax2[2].scatter(0.94769, 0.46856, facecolors='none', edgecolors='r')
+        fig.colorbar(ei_plot)
+        ax2[2].set_xlabel("Expected Improvement")
+
+        ax3[0].text(0.5, 0.5,
+                    f"Iteration: {self._iteration - 1} \n  Query: {prev_query_point} \n Best Valid Observation: {self.best_valid_observation}",
+                    horizontalalignment='center', verticalalignment='center')
+
+        equality_constraint_two_pred, _ = self._equality_constraint_models["EQUALITY_CONSTRAINT_TWO"].predict(coordinates)
+        equality_constraint_two_plot = ax3[1].contourf(xs, ys, tf.reshape(equality_constraint_two_pred, [y_list.shape[0], x_list.shape[0]]),
+                                                       levels=500)
+        ax3[1].scatter(prev_query_point[0], prev_query_point[1], marker="x")
+        fig.colorbar(equality_constraint_two_plot)
+        ax3[1].set_xlabel("EQUALITY CONSTRAINT TWO")
+
+        ax3[0].axis("off")
+        ax3[2].axis("off")
 
         plt.tight_layout()
+        with open(f"../results/10-03-23/run_four/visualisation/iter_{self._iteration - 1}.png", "wb") as fp:
+            plt.savefig(fp)
         plt.show()
 
 
 # Combine KKT conditions with Expected Improvement for constrained optimisation
 # as done in https://pure.uvt.nl/ws/portalfiles/portal/63795955/2022_022.pdf, but use
 # Thompson samples of constraints for calculating gradients of constraint functions.
-class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[ProbabilisticModelType]):
+class KKTThompsonSamplingExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelType]):
     """
-    Builder for an augmented Lagrangian acquisition function using Thompson sampling.
+    Builder for an acquisition function combining the KKT conditions and Expected Improvement.
     """
 
     def __init__(self, objective_tag: Tag, inequality_constraint_prefix: Optional[Tag] = None,
                  equality_constraint_prefix: Optional[Tag] = None, epsilon=0.001,
-                 search_space: Optional[SearchSpace] = None, plot: bool = False):
+                 search_space: Optional[SearchSpace] = None, feasible_region_only: bool = False, plot: bool = False):
         """
         :param objective_tag: The tag for the objective data and model.
         :param inequality_constraint_prefix: Prefix of tags for inequality constraint data/models/Lagrange multipliers.
@@ -791,6 +724,8 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         :param plot: Whether to plot the modelled functions at each iteration of BayesOpt.
         """
         super().__init__()
+        self._equality_constraint_models = {}
+        self._inequality_constraint_models = {}
         self._equality_constraint_trajectories = {}
         self._equality_constraint_trajectory_samplers = {}
         self._inequality_constraint_trajectories = {}
@@ -802,11 +737,13 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         self._epsilon = epsilon
         self._search_space = search_space
         self._augmented_lagrangian_fn = None
+        self._feasible_region_only = feasible_region_only
         self._plot = plot
         self._iteration = 0
         # TODO: Think of better way to do below
-        self.best_valid_observation = 1000  # For when we haven't yet found any valid points
+        self.best_valid_observation = 10  # For when we haven't yet found any valid points
         self._kkt_expected_improvement_fn = None
+        self._alpha = None
 
     def __repr__(self) -> str:
         """"""
@@ -819,6 +756,7 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         self,
         models: Mapping[Tag, HasTrajectorySampler],
         datasets: Optional[Mapping[Tag, Dataset]] = None,
+        alpha: float = 0.20,
     ) -> AcquisitionFunction:
         """
         :param models: The models over each tag.
@@ -830,6 +768,8 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
         print(f"Iteration: {self._iteration}")
+
+        self._alpha = alpha
 
         # Find the best valid objective value seen so far
         satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
@@ -852,17 +792,19 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
             if tag.startswith(self._objective_tag):
                 self._objective_model = copy.deepcopy(model)
             elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                self._equality_constraint_models[tag] = model
                 sampler = model.trajectory_sampler()
                 trajectory = sampler.get_trajectory()
                 self._equality_constraint_trajectory_samplers[tag] = sampler
                 self._equality_constraint_trajectories[tag] = trajectory
             elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                self._inequality_constraint_models[tag] = model
                 sampler = model.trajectory_sampler()
                 trajectory = sampler.get_trajectory()
                 self._inequality_constraint_trajectory_samplers[tag] = sampler
                 self._inequality_constraint_trajectories[tag] = trajectory
 
-        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+        self._kkt_expected_improvement_fn = partial(self._efficient_kkt_expected_improvement, False)
 
         return self._kkt_expected_improvement_fn
 
@@ -871,6 +813,7 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         function: AcquisitionFunction,
         models: Mapping[Tag, ProbabilisticModelType],
         datasets: Optional[Mapping[Tag, Dataset]] = None,
+        alpha: float = 0.20,
     ) -> AcquisitionFunction:
         """
         :param function: The acquisition function to update.
@@ -882,6 +825,8 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         self._iteration += 1
         print(f"Iteration: {self._iteration}")
         datasets = cast(Mapping[Tag, Dataset], datasets)
+
+        self._alpha = alpha
 
         objective_dataset = datasets[self._objective_tag]
 
@@ -911,14 +856,15 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
         if all_constraints_satisfied:
             self.best_valid_observation = min(self.best_valid_observation, most_recent_observation)
 
-        # Plot Models
-        if self._plot:
-            self._plot_models(most_recent_query_point)
-
         # Update models
-        # TODO: Currently using deepcopy for producing consistent plots, may remove in future
-
         self._objective_model = copy.deepcopy(models[self._objective_tag])
+
+        for tag, model in models.items():
+            if (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                self._equality_constraint_models[tag] = model
+            elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                self._inequality_constraint_models[tag] = model
+
         for tag, sampler in self._inequality_constraint_trajectory_samplers.items():
             old_trajectory = self._inequality_constraint_trajectories[tag]
             updated_trajectory = sampler.update_trajectory(old_trajectory)
@@ -929,16 +875,23 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
             updated_trajectory = sampler.update_trajectory(old_trajectory)
             self._equality_constraint_trajectories[tag] = updated_trajectory
 
+        # Plot Models
+        if self._plot:
+            self._plot_models(most_recent_query_point)
+
         print(f"Best Valid Observation: {self.best_valid_observation}")
-        self._kkt_expected_improvement_fn = self._efficient_kkt_expected_improvement
+        self._kkt_expected_improvement_fn = partial(self._efficient_kkt_expected_improvement, False)
 
         return self._kkt_expected_improvement_fn
 
     def _efficient_kkt_expected_improvement(self,
-                                  x: tf.Tensor) -> tf.Tensor:
+                                            return_separate_components: bool,
+                                            x: tf.Tensor) -> tf.Tensor | (tf.Tensor, tf.Tensor):
         """
         Form KKT expected improvement from objective and constraints
-        :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, M]
+        :param: return_separate_components: Whether to return cosine similarity and expected improvement separately (
+                sometimes used for plotting purposes).
+        :param x: Array of points at which to evaluate the kkt expected improvement at of shape [N, 1, D]
         """
         tf.debugging.assert_shapes(
             [(x, [..., 1, None])],
@@ -961,23 +914,31 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
 
         inequality_constraint_grad_dict = {}
         inequality_constraint_bind_dict = {}
+        inequality_constraints_satisfied = tf.constant(True, shape=(x.shape[0], 1))  # [N, 1]
         for tag, trajectory in self._inequality_constraint_trajectories.items():
             with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x)
                 constraint_vals = trajectory(x)  # [N, B, 1]
-            # Only want to consider side of feasibility boundary where inequality constraints are actually satisfied
-            binding = tf.logical_and(constraint_vals <= 0, tf.abs(constraint_vals) <= self._epsilon)
+            constraint_mean, constraint_var = self._inequality_constraint_models[tag].predict(tf.squeeze(x, -2))
+            binding = tf.abs(constraint_mean) / tf.sqrt(constraint_var) <= norm.ppf(1 - self._alpha/2)
+            inequality_constraints_satisfied = tf.logical_and(inequality_constraints_satisfied, tf.squeeze(constraint_vals, -2) <= 0)
+
             constraint_grad = tf.squeeze(tape.gradient(constraint_vals, x), axis=1)
+            print(f"Constraint Grad Shape: {constraint_grad.shape}")
+            print(f"Binding Shape: {binding.shape}")
             inequality_constraint_grad_dict[tag] = constraint_grad
             inequality_constraint_bind_dict[tag] = binding
 
         equality_constraint_grad_dict = {}
         equality_constraint_bind_dict = {}
+        all_equality_constraints_binding = tf.constant(True, shape=(x.shape[0], 1))  # [N, 1]
         for tag, trajectory in self._equality_constraint_trajectories.items():
             with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x)
                 constraint_vals = trajectory(x)  # [N, B, 1]
-            binding = tf.abs(constraint_vals) <= self._epsilon
+            constraint_mean, constraint_var = self._equality_constraint_models[tag].predict(tf.squeeze(x, -2))
+            binding = tf.abs(constraint_mean) / tf.sqrt(constraint_var) <= norm.ppf(1 - self._alpha/2)
+            all_equality_constraints_binding = tf.logical_and(all_equality_constraints_binding, binding)
             constraint_grad = tf.squeeze(tape.gradient(constraint_vals, x), axis=1)
             equality_constraint_grad_dict[tag] = constraint_grad
             equality_constraint_bind_dict[tag] = binding
@@ -1036,7 +997,20 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
 
         cosine_similarities = tf.convert_to_tensor(cosine_similarities, dtype=tf.float64)[..., None]
         assert (expected_improvement.shape == cosine_similarities.shape)
-        return tf.multiply(cosine_similarities, expected_improvement)
+        assert (all_equality_constraints_binding.shape == expected_improvement.shape)
+        assert (inequality_constraints_satisfied.shape == expected_improvement.shape)
+        all_equality_constraints_binding = tf.cast(all_equality_constraints_binding, tf.float64)
+        inequality_constraints_satisfied = tf.cast(inequality_constraints_satisfied, tf.float64)
+        if return_separate_components:
+            if self._feasible_region_only:
+                return cosine_similarities, all_equality_constraints_binding * inequality_constraints_satisfied * expected_improvement
+            else:
+                return cosine_similarities, all_equality_constraints_binding * expected_improvement
+        else:
+            if self._feasible_region_only:
+                return all_equality_constraints_binding * inequality_constraints_satisfied * cosine_similarities * expected_improvement
+            else:
+                return all_equality_constraints_binding * cosine_similarities * expected_improvement
 
     def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
         """
@@ -1085,3 +1059,65 @@ class KKTThompsonSamplingExpectedImprovement(AcquisitionFunctionBuilder[Probabil
 
         # The optimiser maximises function given, so in order to find the minimum we need to negate
         return - satisfied_objective_values
+
+    def _plot_models(self, prev_query_point):
+        """
+        Plot visualisation of surrogate models for objective and inequality constraints, as well as the augmented
+        Lagrangian.
+        """
+        print(f"Prev Query: {prev_query_point}")
+        x_list = tf.linspace(0, 1, 100)
+        y_list = tf.linspace(0, 1, 100)
+        xs, ys = tf.meshgrid(x_list, y_list)
+        coordinates = tf.expand_dims(tf.stack((tf.reshape(xs, [-1]), tf.reshape(ys, [-1])), axis=1), -2)
+
+        objective_pred, _ = self._objective_model.predict(coordinates)
+        cosine_similarities, expected_improvement = self._efficient_kkt_expected_improvement(True, coordinates)
+        kkt_ei_pred = tf.multiply(cosine_similarities, expected_improvement)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 3, figsize=(15, 12))
+        objective_plot = ax1[0].contourf(xs, ys, tf.reshape(objective_pred, [y_list.shape[0], x_list.shape[0]]), levels=500)
+        fig.colorbar(objective_plot)
+        ax1[0].set_xlabel("OBJECTIVE")
+
+        constraint_one_pred = self._inequality_constraint_trajectories["INEQUALITY_CONSTRAINT_ONE"](coordinates)
+        constraint_one_plot = ax1[1].contourf(xs, ys, tf.reshape(constraint_one_pred, [y_list.shape[0], x_list.shape[0]]),
+                                              levels=500)
+        fig.colorbar(constraint_one_plot)
+        ax1[1].set_xlabel("INEQUALITY CONSTRAINT ONE")
+
+        constraint_two_pred = self._inequality_constraint_trajectories["INEQUALITY_CONSTRAINT_TWO"](coordinates)
+        constraint_two_plot = ax1[2].contourf(xs, ys, tf.reshape(constraint_two_pred, [y_list.shape[0], x_list.shape[0]]),
+                                              levels=500)
+        fig.colorbar(constraint_two_plot)
+        ax1[2].set_xlabel("INEQUALITY CONSTRAINT TWO")
+
+        kkt_plot = ax2[0].contourf(xs, ys, tf.reshape(kkt_ei_pred, [y_list.shape[0], x_list.shape[0]]), levels= 500, extend="both")
+        ax2[0].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
+        fig.colorbar(kkt_plot)
+        ax2[0].set_xlabel("KKT Expected Improvement")
+
+        cosine_plot = ax2[1].contourf(xs, ys, tf.reshape(cosine_similarities, [y_list.shape[0], x_list.shape[0]]), levels=500,
+                                      extend="both")
+        ax2[1].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
+        fig.colorbar(cosine_plot)
+        ax2[1].set_xlabel("Cosine Similarities")
+
+        ei_plot = ax2[2].contourf(xs, ys, tf.reshape(expected_improvement, [y_list.shape[0], x_list.shape[0]]),
+                                      levels=500,
+                                      extend="both")
+        ax2[2].scatter(0.1954, 0.4044, facecolors='none', edgecolors='r')
+        fig.colorbar(ei_plot)
+        ax2[2].set_xlabel("Expected Improvement")
+
+        ax3[1].text(0.5, 0.5,
+                    f"Iteration: {self._iteration - 1} \n  Previous Query: {prev_query_point} \n Best Valid Observation: {self.best_valid_observation}",
+                    horizontalalignment='center', verticalalignment='center')
+
+        ax3[0].axis("off")
+        ax3[1].axis("off")
+        ax3[2].axis("off")
+
+        plt.tight_layout()
+        with open(f"../results/07-04-23/kkt_lsq_ts/visualisations/iter_{self._iteration - 1}.png", "wb") as fp:
+            plt.savefig(fp)
+        # plt.show()
