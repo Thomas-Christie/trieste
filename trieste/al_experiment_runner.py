@@ -1,5 +1,6 @@
 from absl import app, flags
 import tensorflow as tf
+import numpy as np
 import trieste
 from trieste.acquisition.optimizer import generate_al_continuous_optimizer
 from trieste.acquisition.function.new_constrained_thompson_sampling import BatchThompsonSamplingAugmentedLagrangian
@@ -19,17 +20,17 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_integer('num_experiments', 100, 'Number of repeats of experiment to run', lower_bound=0)
+flags.DEFINE_integer('num_experiments', 50, 'Number of repeats of experiment to run.')
 flags.DEFINE_integer('num_bo_iterations', 140, 'Number of iterations of Bayesian optimisation to run for.')
 flags.DEFINE_float('epsilon', 0.01, 'Bound within which equality constraints are considered to be satisfied.')
 flags.DEFINE_enum('problem', 'GSBP', ['LSQ', 'GSBP'], 'Test problem to use.')
 flags.DEFINE_integer('num_rff_features', 1000, 'Number of Random Fourier Features to use when approximating the kernel.')
 flags.DEFINE_integer('batch_size', 1, 'Number of points to sample at each iteration of BO.')
 flags.DEFINE_integer('num_initial_samples', 10, 'Number of random samples to fit models before starting BO.')
-flags.DEFINE_boolean('update_lagrange_via_kkt', True, 'Whether to update Lagrange multipliers using a gradient-based'
-                                                      'approach based on KKT conditions.')
+flags.DEFINE_boolean('update_lagrange_via_kkt', False, 'Whether to update Lagrange multipliers using a gradient-based'
+                                                       'approach based on KKT conditions.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/05-04-23/gsbp/al_kkt_update/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/05-04-23/gsbp/al_original_update/data/run_', 'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, data):
@@ -37,10 +38,16 @@ def create_model(search_space, num_rff_features, data):
     return GaussianProcessRegression(gpr, num_rff_features=num_rff_features)
 
 
+def set_seed(seed: int):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
 def main(argv):
     print(f"Running Experiment with Flags: {FLAGS.flags_into_string()}")
     for run in range(FLAGS.num_experiments):
         print(f"Starting Run: {run}")
+        set_seed(run + 42)
         search_space = Box([0.0, 0.0], [1.0, 1.0])
 
         if FLAGS.problem == "LSQ":
@@ -54,7 +61,6 @@ def main(argv):
                 INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
                 EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
                 EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint)
-
 
         initial_inputs = search_space.sample(FLAGS.num_initial_samples)
         initial_data = observer(initial_inputs)
@@ -86,7 +92,8 @@ def main(argv):
                                                                             update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
                                                                             search_space=search_space, plot=False,
                                                                             save_lambda=FLAGS.save_lagrange,
-                                                                            save_path=lambda_save_path, num_bo_iters=FLAGS.num_bo_iterations)
+                                                                            save_path=lambda_save_path,
+                                                                            num_bo_iters=FLAGS.num_bo_iterations)
         elif FLAGS.problem == "GSBP":
             augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
                                                                             inequality_constraint_prefix="INEQUALITY",
@@ -104,7 +111,8 @@ def main(argv):
         rule = ALEfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_al_continuous_optimizer(),
                                              num_query_points=FLAGS.batch_size)
         bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
-        data = bo.optimize(FLAGS.num_bo_iterations, initial_data, initial_models, rule, track_state=True).try_get_final_datasets()
+        data = bo.optimize(FLAGS.num_bo_iterations, initial_data, initial_models, rule,
+                           track_state=True).try_get_final_datasets()
         with open(FLAGS.save_path + f"{run}_data.pkl", "wb") as fp:
             pickle.dump(data, fp)
 
