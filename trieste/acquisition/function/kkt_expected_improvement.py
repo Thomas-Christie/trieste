@@ -924,8 +924,6 @@ class KKTThompsonSamplingExpectedImprovement(KKTAcquisitionFunctionBuilder[Proba
             inequality_constraints_satisfied = tf.logical_and(inequality_constraints_satisfied, tf.squeeze(constraint_vals, -2) <= 0)
 
             constraint_grad = tf.squeeze(tape.gradient(constraint_vals, x), axis=1)
-            print(f"Constraint Grad Shape: {constraint_grad.shape}")
-            print(f"Binding Shape: {binding.shape}")
             inequality_constraint_grad_dict[tag] = constraint_grad
             inequality_constraint_bind_dict[tag] = binding
 
