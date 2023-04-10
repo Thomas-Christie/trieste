@@ -309,12 +309,12 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
             if self._feasible_region_only:
                 return cosine_similarities, all_equality_constraints_binding * inequality_constraints_satisfied * expected_improvement
             else:
-                return cosine_similarities, all_equality_constraints_binding * expected_improvement
+                return cosine_similarities, expected_improvement
         else:
             if self._feasible_region_only:
                 return all_equality_constraints_binding * inequality_constraints_satisfied * cosine_similarities * expected_improvement
             else:
-                return all_equality_constraints_binding * cosine_similarities * expected_improvement
+                return cosine_similarities * expected_improvement
 
     def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
         """
@@ -698,7 +698,7 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         ax3[2].axis("off")
 
         plt.tight_layout()
-        with open(f"../results/10-03-23/run_four/visualisation/iter_{self._iteration - 1}.png", "wb") as fp:
+        with open(f"../results/07-04-23/kkt_gsbp/visualisations/iter_{self._iteration - 1}.png", "wb") as fp:
             plt.savefig(fp)
         plt.show()
 
@@ -1003,12 +1003,12 @@ class KKTThompsonSamplingExpectedImprovement(KKTAcquisitionFunctionBuilder[Proba
             if self._feasible_region_only:
                 return cosine_similarities, all_equality_constraints_binding * inequality_constraints_satisfied * expected_improvement
             else:
-                return cosine_similarities, all_equality_constraints_binding * expected_improvement
+                return cosine_similarities, expected_improvement
         else:
             if self._feasible_region_only:
                 return all_equality_constraints_binding * inequality_constraints_satisfied * cosine_similarities * expected_improvement
             else:
-                return all_equality_constraints_binding * cosine_similarities * expected_improvement
+                return cosine_similarities * expected_improvement
 
     def get_expected_improvement(self, x: tf.Tensor) -> tf.Tensor:
         """

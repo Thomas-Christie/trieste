@@ -1,0 +1,2 @@
+Run KKT acquisition function on GSBP problem, without `feasible_region_only` for producing visualisations; the "KKT Conditions"
+used by the paper actually don't enforce all constraints being satisfied, which I believe is a large shortcoming.
