@@ -1048,7 +1048,7 @@ class KKTThompsonSamplingExpectedImprovement(KKTAcquisitionFunctionBuilder[Proba
             assert (satisfied_objective_values.shape == satisfied.shape)
 
         for tag, trajectory in self._equality_constraint_trajectories.items():
-            constraint_vals = tf.squeeze(trajectory.predict(x), axis=-2)
+            constraint_vals = tf.squeeze(trajectory(x), axis=-2)
             satisfied = tf.logical_and(satisfied, tf.abs(constraint_vals) <= self._epsilon)
             assert (satisfied_objective_values.shape == satisfied.shape)
 

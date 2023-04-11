@@ -62,7 +62,7 @@ def main(argv):
                 EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
                 EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint)
 
-        initial_inputs = search_space.sample(FLAGS.num_initial_samples)
+        initial_inputs = search_space.sample(FLAGS.num_initial_samples, seed=run+42)
         initial_data = observer(initial_inputs)
         initial_models = trieste.utils.map_values(partial(create_model, search_space, FLAGS.num_rff_features),
                                                   initial_data)
