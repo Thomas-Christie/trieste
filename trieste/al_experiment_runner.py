@@ -29,8 +29,12 @@ flags.DEFINE_integer('batch_size', 1, 'Number of points to sample at each iterat
 flags.DEFINE_integer('num_initial_samples', 10, 'Number of random samples to fit models before starting BO.')
 flags.DEFINE_boolean('update_lagrange_via_kkt', False, 'Whether to update Lagrange multipliers using a gradient-based'
                                                        'approach based on KKT conditions.')
+flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce the penalty parameter more conservatively'
+                                                             'if no valid solutions have been found yet.')
+flags.DEFINE_enum('sampling_strategy', 'sobol', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
+                                                                             'initial points.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/05-04-23/gsbp/al_original_update/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/13-04-23/gsbp_ts_al_original_sobol_aggressive_penalty/data/run_', 'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, data):
@@ -62,7 +66,11 @@ def main(argv):
                 EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
                 EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint)
 
-        initial_inputs = search_space.sample(FLAGS.num_initial_samples, seed=run+42)
+        if FLAGS.sampling_strategy == 'uniform_random':
+            initial_inputs = search_space.sample(FLAGS.num_initial_samples, seed=run+42)
+        elif FLAGS.sampling_strategy == 'sobol':
+            initial_inputs = search_space.sample_sobol(FLAGS.num_initial_samples, skip=42+run*FLAGS.num_initial_samples)
+        print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
         initial_models = trieste.utils.map_values(partial(create_model, search_space, FLAGS.num_rff_features),
                                                   initial_data)
@@ -88,6 +96,7 @@ def main(argv):
                                                                             inequality_lambda=inequality_lambda,
                                                                             equality_lambda=None,
                                                                             batch_size=FLAGS.batch_size, penalty=None,
+                                                                            conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
                                                                             epsilon=FLAGS.epsilon,
                                                                             update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
                                                                             search_space=search_space, plot=False,
@@ -101,6 +110,7 @@ def main(argv):
                                                                             inequality_lambda=inequality_lambda,
                                                                             equality_lambda=equality_lambda,
                                                                             batch_size=FLAGS.batch_size, penalty=None,
+                                                                            conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
                                                                             epsilon=FLAGS.epsilon,
                                                                             update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
                                                                             search_space=search_space, plot=False,
