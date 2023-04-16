@@ -66,6 +66,10 @@ from .multi_objective import (
     expected_hv_improvement,
 )
 from .old_constrained_thompson_sampling import OldThompsonSamplingAugmentedLagrangian
-from .new_constrained_thompson_sampling import ThompsonSamplingAugmentedLagrangian, BatchThompsonSamplingAugmentedLagrangian
+from .new_constrained_thompson_sampling import (
+    ThompsonSamplingAugmentedLagrangian,
+    BatchThompsonSamplingAugmentedLagrangian,
+    FullyConsistentBatchThompsonSamplingAugmentedLagrangian
+)
 from .kkt_expected_improvement import KKTExpectedImprovement, KKTThompsonSamplingExpectedImprovement
 from .utils import MultivariateNormalCDF

@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 import trieste
 from trieste.acquisition.optimizer import generate_al_continuous_optimizer
-from trieste.acquisition.function.new_constrained_thompson_sampling import BatchThompsonSamplingAugmentedLagrangian
+from trieste.acquisition.function.new_constrained_thompson_sampling import BatchThompsonSamplingAugmentedLagrangian, FullyConsistentBatchThompsonSamplingAugmentedLagrangian
 from trieste.acquisition.rule import ALEfficientGlobalOptimization
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 from trieste.space import Box
@@ -31,10 +31,13 @@ flags.DEFINE_boolean('update_lagrange_via_kkt', False, 'Whether to update Lagran
                                                        'approach based on KKT conditions.')
 flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce the penalty parameter more conservatively'
                                                              'if no valid solutions have been found yet.')
+flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multipliers and penalty parameter in a mannner'
+                                               'which is fully consistent with the appendix of the original paper (which '
+                                               'differs from the body of the original paper).')
 flags.DEFINE_enum('sampling_strategy', 'sobol', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
                                                                              'initial points.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/13-04-23/gsbp_ts_al_original_sobol_aggressive_penalty/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/19-04-23/gsbp_conservative_fully_consistent/data/run_', 'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, data):
@@ -76,47 +79,89 @@ def main(argv):
                                                   initial_data)
 
         if FLAGS.problem == "LSQ":
-            inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64),
-                                 INEQUALITY_CONSTRAINT_TWO: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
+            if FLAGS.fully_consistent:
+                inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64),
+                                     INEQUALITY_CONSTRAINT_TWO: tf.zeros(1, dtype=tf.float64)}
+            else:
+                inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64),
+                                     INEQUALITY_CONSTRAINT_TWO: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
         elif FLAGS.problem == "GSBP":
-            inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
+            if FLAGS.fully_consistent:
+                inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64)}
+            else:
+                inequality_lambda = {INEQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
 
         if FLAGS.problem == "GSBP":
-            equality_lambda = {EQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64),
-                               EQUALITY_CONSTRAINT_TWO: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
+            if FLAGS.fully_consistent:
+                equality_lambda = {EQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64),
+                                   EQUALITY_CONSTRAINT_TWO: tf.zeros(1, dtype=tf.float64)}
+            else:
+                equality_lambda = {EQUALITY_CONSTRAINT_ONE: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64),
+                                   EQUALITY_CONSTRAINT_TWO: tf.zeros((1, FLAGS.batch_size, 1), dtype=tf.float64)}
 
         lambda_save_path = None
         if FLAGS.save_path is not None:
             lambda_save_path = FLAGS.save_path + f"{run}"
 
         if FLAGS.problem == "LSQ":
-            augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
-                                                                            inequality_constraint_prefix="INEQUALITY",
-                                                                            equality_constraint_prefix=None,
-                                                                            inequality_lambda=inequality_lambda,
-                                                                            equality_lambda=None,
-                                                                            batch_size=FLAGS.batch_size, penalty=None,
-                                                                            conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
-                                                                            epsilon=FLAGS.epsilon,
-                                                                            update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
-                                                                            search_space=search_space, plot=False,
-                                                                            save_lambda=FLAGS.save_lagrange,
-                                                                            save_path=lambda_save_path,
-                                                                            num_bo_iters=FLAGS.num_bo_iterations)
+            if FLAGS.fully_consistent:
+                augmented_lagrangian = FullyConsistentBatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
+                                                                                               inequality_constraint_prefix="INEQUALITY",
+                                                                                               equality_constraint_prefix=None,
+                                                                                               inequality_lambda=inequality_lambda,
+                                                                                               equality_lambda=None,
+                                                                                               batch_size=FLAGS.batch_size, penalty=None,
+                                                                                               conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
+                                                                                               epsilon=FLAGS.epsilon,
+                                                                                               update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
+                                                                                               search_space=search_space, plot=False,
+                                                                                               save_lambda=FLAGS.save_lagrange,
+                                                                                               save_path=lambda_save_path,
+                                                                                               num_bo_iters=FLAGS.num_bo_iterations)
+            else:
+                augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
+                                                                                inequality_constraint_prefix="INEQUALITY",
+                                                                                equality_constraint_prefix=None,
+                                                                                inequality_lambda=inequality_lambda,
+                                                                                equality_lambda=None,
+                                                                                batch_size=FLAGS.batch_size, penalty=None,
+                                                                                conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
+                                                                                epsilon=FLAGS.epsilon,
+                                                                                update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
+                                                                                search_space=search_space, plot=False,
+                                                                                save_lambda=FLAGS.save_lagrange,
+                                                                                save_path=lambda_save_path,
+                                                                                num_bo_iters=FLAGS.num_bo_iterations)
         elif FLAGS.problem == "GSBP":
-            augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
-                                                                            inequality_constraint_prefix="INEQUALITY",
-                                                                            equality_constraint_prefix="EQUALITY",
-                                                                            inequality_lambda=inequality_lambda,
-                                                                            equality_lambda=equality_lambda,
-                                                                            batch_size=FLAGS.batch_size, penalty=None,
-                                                                            conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
-                                                                            epsilon=FLAGS.epsilon,
-                                                                            update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
-                                                                            search_space=search_space, plot=False,
-                                                                            save_lambda=FLAGS.save_lagrange,
-                                                                            save_path=lambda_save_path,
-                                                                            num_bo_iters=FLAGS.num_bo_iterations)
+            if FLAGS.fully_consistent:
+                augmented_lagrangian = FullyConsistentBatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
+                                                                                               inequality_constraint_prefix="INEQUALITY",
+                                                                                               equality_constraint_prefix="EQUALITY",
+                                                                                               inequality_lambda=inequality_lambda,
+                                                                                               equality_lambda=equality_lambda,
+                                                                                               batch_size=FLAGS.batch_size,
+                                                                                               penalty=None,
+                                                                                               conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
+                                                                                               epsilon=FLAGS.epsilon,
+                                                                                               update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
+                                                                                               search_space=search_space, plot=False,
+                                                                                               save_lambda=FLAGS.save_lagrange,
+                                                                                               save_path=lambda_save_path,
+                                                                                               num_bo_iters=FLAGS.num_bo_iterations)
+            else:
+                augmented_lagrangian = BatchThompsonSamplingAugmentedLagrangian(objective_tag=OBJECTIVE,
+                                                                                inequality_constraint_prefix="INEQUALITY",
+                                                                                equality_constraint_prefix="EQUALITY",
+                                                                                inequality_lambda=inequality_lambda,
+                                                                                equality_lambda=equality_lambda,
+                                                                                batch_size=FLAGS.batch_size, penalty=None,
+                                                                                conservative_penalty_decrease=FLAGS.conservative_penalty_decrease,
+                                                                                epsilon=FLAGS.epsilon,
+                                                                                update_lagrange_via_kkt=FLAGS.update_lagrange_via_kkt,
+                                                                                search_space=search_space, plot=False,
+                                                                                save_lambda=FLAGS.save_lagrange,
+                                                                                save_path=lambda_save_path,
+                                                                                num_bo_iters=FLAGS.num_bo_iterations)
 
         rule = ALEfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_al_continuous_optimizer(),
                                              num_query_points=FLAGS.batch_size)
