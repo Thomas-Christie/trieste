@@ -45,6 +45,7 @@ from ..space import Box, SearchSpace
 from ..types import State, Tag, TensorType
 from .function import (
     BatchThompsonSamplingAugmentedLagrangian,
+    FullyConsistentBatchThompsonSamplingAugmentedLagrangian,
     BatchMonteCarloExpectedImprovement,
     ExpectedImprovement,
     ProbabilityOfImprovement,
@@ -372,7 +373,8 @@ class ALEfficientGlobalOptimization(
     @overload
     def __init__(
         self: "ALEfficientGlobalOptimization[SearchSpaceType, ProbabilisticModelType]",
-        builder: BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType],
+        builder: BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType]
+                 | FullyConsistentBatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType],
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,
@@ -381,7 +383,8 @@ class ALEfficientGlobalOptimization(
 
     def __init__(
         self,
-        builder: Optional[BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType]] = None,
+        builder: Optional[BatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType]
+                          | FullyConsistentBatchThompsonSamplingAugmentedLagrangian[ProbabilisticModelType]] = None,
         optimizer: ALAcquisitionOptimizer[SearchSpaceType] | None = None,
         num_query_points: int = 1,
         initial_acquisition_function: Optional[AcquisitionFunction] = None,
@@ -434,7 +437,8 @@ class ALEfficientGlobalOptimization(
                 # TODO: Raise error here? Currently we're only working with AL which is vectorizable
                 pass
 
-        self._builder: BatchThompsonSamplingAugmentedLagrangian = builder
+        self._builder: BatchThompsonSamplingAugmentedLagrangian \
+                       | FullyConsistentBatchThompsonSamplingAugmentedLagrangian = builder
         self._optimizer = optimizer
         self._num_query_points = num_query_points
         self._acquisition_function: Optional[AcquisitionFunction] = initial_acquisition_function

@@ -69,7 +69,8 @@ from .old_constrained_thompson_sampling import OldThompsonSamplingAugmentedLagra
 from .new_constrained_thompson_sampling import (
     ThompsonSamplingAugmentedLagrangian,
     BatchThompsonSamplingAugmentedLagrangian,
-    FullyConsistentBatchThompsonSamplingAugmentedLagrangian
+    FullyConsistentBatchThompsonSamplingAugmentedLagrangian,
+    DeterministicAugmentedLagrangian
 )
 from .kkt_expected_improvement import KKTExpectedImprovement, KKTThompsonSamplingExpectedImprovement
 from .utils import MultivariateNormalCDF

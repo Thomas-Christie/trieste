@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections import OrderedDict
-from typing import Mapping, Optional, cast
+from typing import Mapping, Optional, cast, Callable
 
 import numpy as np
 import tensorflow as tf
@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib import ticker
 import pickle
 
+from functions import objectives, constraints
 from ...data import Dataset
 from ...models.interfaces import HasTrajectorySampler
 from ...space import SearchSpace
@@ -1064,6 +1065,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
     def __init__(
         self,
         objective_tag: Tag,
+        known_objective: Callable = None,
         inequality_constraint_prefix: Optional[Tag] = None,
         equality_constraint_prefix: Optional[Tag] = None,
         inequality_lambda: Optional[Mapping[Tag, TensorType]] = None,
@@ -1081,6 +1083,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
     ):
         """
         :param objective_tag: The tag for the objective data and model.
+        :param known_objective: Known objective function (if it is being treated as known) which behaves like a trajectory.
         :param inequality_constraint_prefix: Prefix of tags for inequality constraint data/models/Lagrange multipliers.
         :param equality_constraint_prefix: Prefix for tags for equality constraint data/models/Lagrange multipliers.
         :param inequality_lambda: Initial values for Lagrange multipliers of inequality constraints.
@@ -1104,6 +1107,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         self._objective_trajectory = None
         self._objective_trajectory_sampler = None
         self._objective_tag = objective_tag
+        self._known_objective = known_objective
         self._inequality_constraint_prefix = inequality_constraint_prefix
         self._equality_constraint_prefix = equality_constraint_prefix
         if inequality_lambda is None:
@@ -1193,10 +1197,15 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
 
         if self._penalty is None:
             initial_penalty = self._get_initial_penalty(datasets)
+            print(f"Initial Penalty: {initial_penalty}")
             self._penalty = tf.constant(initial_penalty, dtype=tf.float64)
 
-        self._objective_trajectory_sampler = models[self._objective_tag].trajectory_sampler()
-        self._objective_trajectory = self._objective_trajectory_sampler.get_trajectory()
+        if self._known_objective is not None:
+            # If objective is known, we don't model it and instead use the ground truth.
+            self._objective_trajectory = self._known_objective
+        else:
+            self._objective_trajectory_sampler = models[self._objective_tag].trajectory_sampler()
+            self._objective_trajectory = self._objective_trajectory_sampler.get_trajectory()
 
         self._inequality_constraint_trajectory_samplers = {}
         self._inequality_constraint_trajectories = {}
@@ -1294,6 +1303,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
         print(f"Iteration: {self._iteration}")
+        print(f"Stop Decreasing Penalty: {self._stop_decreasing_penalty}")
         datasets = cast(Mapping[Tag, Dataset], datasets)
 
         objective_dataset = datasets[self._objective_tag]
@@ -1333,10 +1343,12 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
             objective_vals = datasets[self._objective_tag].observations
             valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
             self._best_valid_observation = tf.math.reduce_min(valid_y)
-            print(f"Best Valid Observation: {self._best_valid_observation}")
+        print(f"Best Valid Observation: {self._best_valid_observation}")
 
         # Update sampled trajectories
-        self._objective_trajectory = self._objective_trajectory_sampler.update_trajectory(self._objective_trajectory)
+        if self._known_objective is None:
+            # Only update objective trajectory if it is unknown, and hence we're modelling it
+            self._objective_trajectory = self._objective_trajectory_sampler.update_trajectory(self._objective_trajectory)
         for tag, sampler in self._inequality_constraint_trajectory_samplers.items():
             old_trajectory = self._inequality_constraint_trajectories[tag]
             updated_trajectory = sampler.update_trajectory(old_trajectory)
@@ -1383,6 +1395,8 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         opt_objective_x = datasets[self._objective_tag].query_points[-self._batch_size:]
         opt_objective_value = datasets[self._objective_tag].observations[-self._batch_size:]
         print(f"Most Recent Objective X: {opt_objective_x} Value: {opt_objective_value}")
+        print(f"Most Recent Ineq One Val: {datasets['INEQUALITY_CONSTRAINT_ONE'].observations[-self._batch_size:]}")
+        print(f"Most Recent Ineq Two Val: {datasets['INEQUALITY_CONSTRAINT_TWO'].observations[-self._batch_size:]}")
 
         if self._save_lambda:
             # Store inequality lambda values if we're wanting to save lambda values
@@ -1726,6 +1740,498 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         :return: Optimal slack values at each x location, of shape [N, B, 1]
         """
         tf.debugging.assert_rank(inequality_constraint_vals, 3)
+        slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals  # TODO: Perhaps make broadcasting explicit?
+        slack_vals_non_neg = tf.nn.relu(slack_vals)
+        tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])
+        return slack_vals_non_neg
+
+
+class DeterministicAugmentedLagrangian(VectorizedAcquisitionFunctionBuilder[HasTrajectorySampler]):
+    """
+    Builder for an augmented Lagrangian acquisition function using Thompson sampling.
+    """
+
+    def __init__(
+        self,
+        objective_tag: Tag,
+        inequality_constraint_prefix: Optional[Tag] = None,
+        equality_constraint_prefix: Optional[Tag] = None,
+        inequality_lambda: Optional[Mapping[Tag, TensorType]] = None,
+        equality_lambda: Optional[Mapping[Tag, TensorType]] = None,
+        batch_size: int = 1,
+        penalty: TensorType = None,
+        conservative_penalty_decrease: bool = False,
+        epsilon: float = 0.01,
+        update_lagrange_via_kkt: bool = False,
+        search_space: Optional[SearchSpace] = None,
+        plot: bool = False,
+        save_lambda: bool = False,
+        save_path: str = None,
+        num_bo_iters: int = None,
+        gsbp: bool = False
+    ):
+        """
+        :param objective_tag: The tag for the objective data and model.
+        :param inequality_constraint_prefix: Prefix of tags for inequality constraint data/models/Lagrange multipliers.
+        :param equality_constraint_prefix: Prefix for tags for equality constraint data/models/Lagrange multipliers.
+        :param inequality_lambda: Initial values for Lagrange multipliers of inequality constraints.
+        :param equality_lambda: Initial values for Lagrange multipliers of equality constraints.
+        :param penalty: Initial penalty. If None, it is set to a default value using the _get_initial_penalty method.
+        :param conservative_penalty_decrease: Whether to conservatively decrease the penalty parameter if no valid solution
+                                              has been found yet.
+        :param epsilon: Bound within which equality constraints are considered to be satisfied.
+        :param update_lagrange_via_kkt: Whether to update Lagrange multipliers with a gradient-based approach based on
+                                        KKT conditions
+        :param search_space: The global search space over which the optimisation is defined. This is
+            only used to determine explicit constraints.
+        :param save_lambda: Whether to keep track of lagrange multipliers at each iteration (for experiments).
+        :param save_path: Path to save lagrange multipliers to (method of saving is currently hacky (i.e. need to manually
+                          specify num iters of BayesOpt in the code here, but is fine for sake of personal experimentation).
+        """
+        self._objective_trajectory = None
+        self._objective_trajectory_sampler = None
+        self._objective_tag = objective_tag
+        self._inequality_constraint_prefix = inequality_constraint_prefix
+        self._equality_constraint_prefix = equality_constraint_prefix
+        if inequality_lambda is None:
+            self._inequality_lambda = {}
+        else:
+            self._inequality_lambda = inequality_lambda
+        if equality_lambda is None:
+            self._equality_lambda = {}
+        else:
+            self._equality_lambda = equality_lambda
+        self._batch_size = batch_size
+        self._penalty = penalty
+        self._epsilon = epsilon
+        self._update_lagrange_via_kkt = update_lagrange_via_kkt
+        self._search_space = search_space
+        self._augmented_lagrangian_fn = None
+        self._plot = plot
+        self._save_lambda = save_lambda
+        self._save_path = save_path
+        self._num_bo_iters = num_bo_iters
+        self._iteration = 0
+        self._inequality_lambda_tracker = {}
+        self._equality_lambda_tracker = {}
+        self._penalty_tracker = [self._penalty]
+        self._stop_decreasing_penalty = False
+        self._best_valid_observation = None  # Kept to None until a valid observation is found.
+        self._conservative_penalty_decrease = conservative_penalty_decrease
+        self._gsbp = gsbp
+
+        if self._inequality_lambda is not None:
+            for k, v in self._inequality_lambda.items():
+                self._inequality_lambda_tracker[k] = [v]
+
+        if self._equality_lambda is not None:
+            for k, v in self._equality_lambda.items():
+                self._equality_lambda_tracker[k] = [v]
+
+    def __repr__(self) -> str:
+        """"""
+        return (
+            f"DeterministicAugmentedLagrangian({self._objective_tag!r}, {self._inequality_constraint_prefix!r},"
+            f" {self._equality_constraint_prefix!r}, {self._search_space!r})"
+        )
+
+    def prepare_acquisition_function(
+        self,
+        models: Mapping[Tag, HasTrajectorySampler],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> AcquisitionFunction:
+        """
+        :param models: The models over each tag.
+        :param datasets: The data from the observer.
+        :return: The augmented Lagrangian function, using Thompson sampling to approximate all unknown functions.
+        :raise KeyError: If `objective_tag` is not found in ``datasets`` and ``models``.
+        :raise tf.errors.InvalidArgumentError: If the objective data is empty.
+        """
+        tf.debugging.Assert(datasets is not None, [tf.constant([])])
+        self._iteration += 1
+
+        # Find the best valid objective value seen so far
+        satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
+        for tag, dataset in datasets.items():
+            if (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = constraint_vals <= 0
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+            elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = tf.abs(constraint_vals) <= self._epsilon
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+
+        if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+            objective_vals = datasets[self._objective_tag].observations
+            valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
+            self._best_valid_observation = tf.math.reduce_min(valid_y)
+            print(f"Best Valid Observation: {self._best_valid_observation}")
+
+        if self._penalty is None:
+            initial_penalty = self._get_initial_penalty(datasets)
+            print(f"Initial Penalty: {initial_penalty}")
+            self._penalty = tf.constant(initial_penalty, dtype=tf.float64)
+
+        self._augmented_lagrangian_fn = self._negative_augmented_lagrangian
+
+        return self._augmented_lagrangian_fn
+
+    def _get_initial_penalty(self,
+                             datasets: Optional[Mapping[Tag, Dataset]] = None):
+        """
+        :param datasets: The data from the observer.
+        :return: Initial penalty to use in Augmented Lagrangian, calculated as done by https://www.mcs.anl.gov/papers/P5401-0915.pdf
+                 and https://arxiv.org/pdf/1605.09466.pdf
+        """
+        all_satisfied = None
+        sum_squared = None
+        if self._inequality_constraint_prefix is not None:
+            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            for tag in inequality_constraint_tags:
+                constraint_satisfied = tf.squeeze(datasets[tag].observations) <= 0
+                if all_satisfied is None:
+                    all_satisfied = constraint_satisfied
+                else:
+                    all_satisfied = tf.logical_and(all_satisfied, constraint_satisfied)
+
+                # Only consider invalid inequality constraints (i.e. > 0)
+                constraint_squared = tf.square(tf.nn.relu(tf.squeeze(datasets[tag].observations)))
+                if sum_squared is None:
+                    sum_squared = constraint_squared
+                else:
+                    sum_squared += constraint_squared
+
+        if self._equality_constraint_prefix is not None:
+            equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
+            for tag in equality_constraint_tags:
+                constraint_satisfied = tf.abs(tf.squeeze(datasets[tag].observations)) <= self._epsilon
+                if all_satisfied is None:
+                    all_satisfied = constraint_satisfied
+                else:
+                    all_satisfied = tf.logical_and(all_satisfied, constraint_satisfied)
+
+                constraint_squared = tf.square(tf.squeeze(datasets[tag].observations))
+                if sum_squared is None:
+                    sum_squared = constraint_squared
+                else:
+                    sum_squared += constraint_squared
+
+        at_least_one_violated = tf.logical_not(all_satisfied)
+
+        if tf.reduce_sum(tf.cast(at_least_one_violated, tf.int32)) == 0:
+            # If valid everywhere, set initial penalty to one
+            initial_penalty = 1
+        else:
+            sum_squared = sum_squared[at_least_one_violated]
+            min_sum_squared = tf.math.reduce_min(sum_squared)
+            if tf.reduce_sum(tf.cast(all_satisfied, tf.int32)) == 0:
+                denominator = 2 * tfp.stats.percentile(datasets[self._objective_tag].observations, 50.0, interpolation='midpoint')
+            else:
+                best_valid_objective = tf.math.reduce_min(datasets[self._objective_tag].observations[all_satisfied])
+                denominator = 2 * best_valid_objective
+            initial_penalty = min_sum_squared / denominator
+
+        return tf.cast(tf.abs(initial_penalty), dtype=tf.float64)
+
+    def update_acquisition_function(
+            self,
+            function: AcquisitionFunction,
+            models: Mapping[Tag, ProbabilisticModelType],
+            datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> AcquisitionFunction:
+        """
+        :param function: The acquisition function to update.
+        :param models: The models for each tag.
+        :param datasets: The data from the observer.
+        :return: The augmented Lagrangian function, updating sampled unknown functions (ideally with decoupled sampling).
+        """
+        tf.debugging.Assert(datasets is not None, [tf.constant([])])
+        self._iteration += 1
+        print(f"Iteration: {self._iteration}")
+        datasets = cast(Mapping[Tag, Dataset], datasets)
+
+        print(f"AL @ 0.92148052 0.80743449: {self._negative_augmented_lagrangian(tf.Variable([[[0.92148052, 0.80743449]]], dtype=tf.float64))}")
+        print(f"AL @ 0.19418144 0.40449058: {self._negative_augmented_lagrangian(tf.Variable([[[0.19418144, 0.40449058]]], dtype=tf.float64))}")
+
+        x1 = tf.Variable([[[0.2, 0.2]]], dtype=tf.float64)
+        x2 = tf.Variable([[[0.5, 0.5]]], dtype=tf.float64)
+        x3 = tf.Variable([[[0.38604815, 0.38604815]]], dtype=tf.float64)
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch([x1, x2, x3])
+            y1 = self._negative_augmented_lagrangian(x1)
+            y2 = self._negative_augmented_lagrangian(x2)
+            y3 = self._negative_augmented_lagrangian(x3)
+
+        print(f"Penalty: {self._penalty}")
+        print(f"x1 Val: {y1} Gradient: {tape.gradient(y1, x1)}")
+        print(f"Toy Cons 1 @ x1: {constraints.toy_constraint_one(tf.squeeze(x1, 0))}")
+        print(f"Lagrange Multiplier: {self._inequality_lambda['INEQUALITY_CONSTRAINT_ONE']}")
+        print(f"Val: {y3} Grad @ (0.38604815 0.38604815): {tape.gradient(y3, x3)}")
+        print(f"x2 Val: {y2} Gradient: {tape.gradient(y2, x2)}")
+
+
+        objective_dataset = datasets[self._objective_tag]
+
+        tf.debugging.assert_positive(
+            len(objective_dataset),
+            message="Lagrange multiplier updates are defined with respect to existing points in the"
+                    " objective data, but the objective data is empty.",
+        )
+
+        # Find the best valid objective value seen so far
+        satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
+        for tag, dataset in datasets.items():
+            if (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = constraint_vals <= 0
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+            elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = tf.abs(constraint_vals) <= self._epsilon
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+
+        if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+            objective_vals = datasets[self._objective_tag].observations
+            valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
+            self._best_valid_observation = tf.math.reduce_min(valid_y)
+        print(f"Best Valid Observation: {self._best_valid_observation}")
+
+        # Obtain Augmented Lagrangian values at observed points before updating Lagrange multipliers and penalty term
+        augmented_lagrangian_values_at_observed_points = self._deterministic_augmented_lagrangian(datasets)
+        best_observed_augmented_lagrangian_idx = int(tf.argmin(augmented_lagrangian_values_at_observed_points))
+        best_observed_augmented_lagrangian_idx = -1
+
+        # Update Lagrange multipliers
+        self._default_lagrange_update(datasets, best_observed_augmented_lagrangian_idx)
+
+        # Update penalty
+        if not self._stop_decreasing_penalty:
+            self._update_penalty(datasets, best_observed_augmented_lagrangian_idx)
+
+        opt_objective_x = datasets[self._objective_tag].query_points[-self._batch_size:]
+        opt_objective_value = datasets[self._objective_tag].observations[-self._batch_size:]
+        print(f"Most Recent Objective X: {opt_objective_x} Value: {opt_objective_value}")
+        print(f"Most Recent Ineq One Val: {datasets['INEQUALITY_CONSTRAINT_ONE'].observations[-self._batch_size:]}")
+        # print(f"Most Recent Ineq Two Val: {datasets['INEQUALITY_CONSTRAINT_TWO'].observations[-self._batch_size:]}")
+
+        self._augmented_lagrangian_fn = self._negative_augmented_lagrangian
+
+        return self._augmented_lagrangian_fn
+
+    def _default_lagrange_update(self,
+                                 datasets: Mapping[Tag, Dataset],
+                                 best_observed_augmented_lagrangian_idx: int):
+        """
+        :param datasets: Datasets containing previously observed points
+        :param best_observed_augmented_lagrangian_idx: Index of observed point in dataset which minimises the Augmented
+                                                       Lagrangian.
+
+        Updates Lagrange multipliers given previously observed data in accordance with Picheny et al.'s paper.
+        """
+        print(f"Best Index: {best_observed_augmented_lagrangian_idx}")
+
+        # Update Lagrange multipliers for inequality constraints
+        if self._inequality_constraint_prefix is not None:
+            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            for tag in inequality_constraint_tags:
+                inequality_constraint_val = datasets[tag].observations[best_observed_augmented_lagrangian_idx]
+                slack_val = self._obtain_slacks(inequality_constraint_val, self._inequality_lambda[tag], self._penalty)
+                assert (slack_val.shape == self._inequality_lambda[tag].shape)
+                assert (slack_val.shape == inequality_constraint_val.shape)
+                updated_multiplier = self._inequality_lambda[tag] + (1 / self._penalty) * (inequality_constraint_val + slack_val)
+                self._inequality_lambda[tag] = updated_multiplier
+
+        # Update Lagrange multipliers for equality constraints
+        if self._equality_constraint_prefix is not None:
+            equality_constraint_tags = [key for key in datasets.keys() if
+                                        key.startswith(self._equality_constraint_prefix)]
+            for tag in equality_constraint_tags:
+                equality_constraint_val = datasets[tag].observations[best_observed_augmented_lagrangian_idx]
+                updated_multiplier = self._equality_lambda[tag] + (1 / self._penalty) * equality_constraint_val
+                self._equality_lambda[tag] = updated_multiplier
+
+    def _update_penalty(self,
+                        datasets: Mapping[Tag, Dataset],
+                        best_observed_augmented_lagrangian_idx: int):
+        """
+        :param datasets: Datasets containing previously observed points
+        :param best_observed_augmented_lagrangian_idx: Index of observed point in dataset which minimises the Augmented
+                                                       Lagrangian.
+
+        Updates penalty term given previously observed data in accordance with Picheny et al.'s paper.
+        """
+
+        # See if inequality constraints are satisfied
+        inequality_constraints_satisfied = True
+        if self._inequality_constraint_prefix is not None:
+            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            for tag in inequality_constraint_tags:
+                inequality_constraint_val = datasets[tag].observations[best_observed_augmented_lagrangian_idx]
+                inequality_constraints_satisfied = inequality_constraints_satisfied and inequality_constraint_val <= 0
+
+        # See if equality constraints are satisfied
+        equality_constraints_satisfied = True
+        if self._equality_constraint_prefix is not None:
+            equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
+            for tag in equality_constraint_tags:
+                equality_constraint_val = datasets[tag].observations[best_observed_augmented_lagrangian_idx]
+                equality_constraints_satisfied = equality_constraints_satisfied and tf.abs(equality_constraint_val) <= self._epsilon
+
+        if not (equality_constraints_satisfied and inequality_constraints_satisfied):
+            if self._conservative_penalty_decrease and self._best_valid_observation is None:
+                decreasing_constant = 10/9
+            else:
+                decreasing_constant = 2.0
+            print(f"Decreasing constant: {decreasing_constant}")
+            self._penalty = self._penalty / tf.pow(tf.constant(decreasing_constant, dtype=tf.float64), self._batch_size)
+            print(f"Not Satisfied. Updated Penalty: {self._penalty}")
+        else:
+            print(f"Satisfied")
+
+    def _deterministic_augmented_lagrangian(self,
+                                            datasets: Mapping[Tag, Dataset]) -> TensorType:
+        """
+        :param datasets: Datasets containing previously observed points.
+        :returns: Augmented Lagrangian values at observed points in datasets.
+        """
+
+        objective_vals = datasets[self._objective_tag].observations  # [N, 1]
+
+        sum_equality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        if self._equality_constraint_prefix is not None:
+            equality_constraint_tags = [key for key in datasets.keys() if
+                                        key.startswith(self._equality_constraint_prefix)]
+            for tag in equality_constraint_tags:
+                equality_constraint_vals = datasets[tag].observations  # [N, 1]
+                equality_lambda_scaled = self._equality_lambda[tag] * equality_constraint_vals  # [N, 1]
+                equality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(equality_constraint_vals)
+                assert (equality_penalty_scaled.shape == sum_equality_penalty_scaled.shape)
+                assert (equality_lambda_scaled.shape == sum_equality_lambda_scaled.shape)
+                sum_equality_penalty_scaled += equality_penalty_scaled
+                sum_equality_lambda_scaled += equality_lambda_scaled
+
+        # Calculate inequality constraint values using the sampled trajectory, and scale them with Lagrange multipliers
+        # and penalty parameter
+        sum_inequality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        sum_inequality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        if self._inequality_constraint_prefix is not None:
+            inequality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._inequality_constraint_prefix)]
+            for tag in inequality_constraint_tags:
+                inequality_constraint_vals = datasets[tag].observations  # [N, 1]
+                slack_vals = - (self._inequality_lambda[tag] * self._penalty) - inequality_constraint_vals  # TODO: Perhaps make broadcasting explicit?
+                slack_vals = tf.nn.relu(slack_vals)
+                # slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag],
+                #                                  self._penalty)  # [N, 1]
+                assert (slack_vals.shape == inequality_constraint_vals.shape)
+                inequality_plus_slack = inequality_constraint_vals + slack_vals
+                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, B, 1] - This could lose first axis if N = 1
+                inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(inequality_plus_slack)
+                assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
+                assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
+                sum_inequality_penalty_scaled += inequality_penalty_scaled
+                sum_inequality_lambda_scaled += inequality_lambda_scaled
+
+        # Return augmented Lagrangian
+        al = tf.squeeze(objective_vals + sum_equality_lambda_scaled + sum_inequality_lambda_scaled + sum_equality_penalty_scaled + sum_inequality_penalty_scaled, -1)
+        return al
+
+    def increase_penalty_and_return_acquisition_function(self):
+        """
+        Occasionally once penalty becomes very small L-BFGS-B will fail. I strongly suspect this is due to the gradient
+        near the constraint satisfaction boundary becoming extremely large. If this starts to happen, we stop decreasing
+        the penalty parameter and increase, until optimisation starts to work again.
+        """
+        self._stop_decreasing_penalty = True
+        self._penalty = 2.0 * self._penalty
+        self._augmented_lagrangian_fn = self._negative_augmented_lagrangian
+        return self._augmented_lagrangian_fn
+
+    def _negative_augmented_lagrangian(
+            self,
+            x: tf.Tensor) -> tf.Tensor:
+        """
+        Form negative of augmented Lagrangian (since acquisition function optimiser *maximises* the returned acquisition
+        function)
+
+        :param x: Array of points at which to evaluate the augmented Lagrangian of shape [N, B, D] (middle axis is for batching
+                  when calling the sampled trajectories)
+        :return: Values of negative augmented Lagrangian at given x values of shape [N, B]
+        """
+        squeezed_x = tf.squeeze(x, 1)
+
+        objective_vals = objectives.linear_objective(squeezed_x)
+
+        sum_equality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        equality_tags = ['EQUALITY_CONSTRAINT_ONE', 'EQUALITY_CONSTRAINT_TWO']
+
+        if self._gsbp:
+            if self._equality_constraint_prefix is not None:
+                for tag in equality_tags:
+                    if tag == 'EQUALITY_CONSTRAINT_ONE':
+                        equality_constraint_vals = constraints.centered_branin(squeezed_x)
+                    else:
+                        equality_constraint_vals = constraints.parr_constraint(squeezed_x)
+                    equality_lambda_scaled = self._equality_lambda[tag] * equality_constraint_vals  # [N, 1]
+                    equality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(equality_constraint_vals)
+                    assert (equality_penalty_scaled.shape == sum_equality_penalty_scaled.shape)
+                    assert (equality_lambda_scaled.shape == sum_equality_lambda_scaled.shape)
+                    sum_equality_penalty_scaled += equality_penalty_scaled
+                    sum_equality_lambda_scaled += equality_lambda_scaled
+
+        # Calculate inequality constraint values using the sampled trajectory, and scale them with Lagrange multipliers
+        # and penalty parameter
+        sum_inequality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+        sum_inequality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
+
+        if not self._gsbp:
+            inequality_tags = ['INEQUALITY_CONSTRAINT_ONE', 'INEQUALITY_CONSTRAINT_TWO']
+        else:
+            inequality_tags = ['INEQUALITY_CONSTRAINT_ONE']
+        if self._inequality_constraint_prefix is not None:
+            for tag in inequality_tags:
+                if tag == 'INEQUALITY_CONSTRAINT_ONE':
+                    inequality_constraint_vals = constraints.toy_constraint_one(squeezed_x)  # [N, 1]
+                else:
+                    inequality_constraint_vals = constraints.toy_constraint_two(squeezed_x)  # [N, 1]
+                # slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag],
+                #                                  self._penalty)  # [N, B, 1]
+                # assert (slack_vals.shape == inequality_constraint_vals.shape)
+                # inequality_lambda_scaled = self._inequality_lambda[tag] * tf.nn.relu(inequality_constraint_vals)  # [N, 1] - This could lose first axis if N = 1
+                # inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(tf.nn.relu(inequality_constraint_vals))
+                # assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
+                # assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
+                # sum_inequality_penalty_scaled += inequality_penalty_scaled
+                # sum_inequality_lambda_scaled += inequality_lambda_scaled
+                slack_vals = self._obtain_slacks(inequality_constraint_vals, self._inequality_lambda[tag],
+                                                 self._penalty)  # [N, B, 1]
+                assert (slack_vals.shape == inequality_constraint_vals.shape)
+                inequality_plus_slack = inequality_constraint_vals + slack_vals
+                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, 1] - This could lose first axis if N = 1
+                inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(inequality_plus_slack)
+                assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
+                assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
+                sum_inequality_penalty_scaled += inequality_penalty_scaled
+                sum_inequality_lambda_scaled += inequality_lambda_scaled
+
+        # Return negative of augmented Lagrangian
+        neg_al = - objective_vals - sum_inequality_lambda_scaled - sum_equality_lambda_scaled - sum_inequality_penalty_scaled - sum_equality_penalty_scaled
+        return neg_al
+
+    def _obtain_slacks(
+            self,
+            inequality_constraint_vals: tf.Tensor,
+            inequality_lambda: tf.Variable,
+            penalty: tf.Variable) -> tf.Tensor:
+        """
+        Obtain optimal slack values for augmented Lagrangian
+        :param inequality_constraint_vals: Inequality constraint values of shape [N, 1]
+        :param inequality_lambda: Lagrange multiplier for given inequality constraint
+        :param penalty: Penalty for constraint violation
+        :return: Optimal slack values at each x location, of shape [N, 1]
+        """
         slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals  # TODO: Perhaps make broadcasting explicit?
         slack_vals_non_neg = tf.nn.relu(slack_vals)
         tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])

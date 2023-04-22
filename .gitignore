@@ -130,3 +130,11 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Lockwood executables
+#!/functions/lockwood/runlock/runlock.py
+functions/lockwood/*
+!functions/lockwood/runlock
+functions/lockwood/runlock/*
+!functions/lockwood/runlock/runlock.py
+
