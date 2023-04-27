@@ -1481,7 +1481,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
             self._penalty = self._penalty / tf.pow(tf.constant(decreasing_constant, dtype=tf.float64), self._batch_size)
             print(f"Not Satisfied. Updated Penalty: {self._penalty}")
         else:
-            print(f"Satisfied")
+            print("Satisfied")
 
     def _deterministic_augmented_lagrangian(self,
                                             datasets: Mapping[Tag, Dataset]) -> TensorType:
@@ -1492,9 +1492,10 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
 
         objective_vals = datasets[self._objective_tag].observations[..., None]  # [N, 1, 1]
 
+        # Calculate equality constraint values using the sampled trajectory, and scale them with Lagrange multipliers
+        # and penalty parameter
         sum_equality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
-
         if self._equality_constraint_prefix is not None:
             equality_constraint_tags = [key for key in datasets.keys() if key.startswith(self._equality_constraint_prefix)]
             for tag in equality_constraint_tags:
@@ -1518,14 +1519,14 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
                                                  self._penalty)  # [N, 1, 1]
                 assert (slack_vals.shape == inequality_constraint_vals.shape)
                 inequality_plus_slack = inequality_constraint_vals + slack_vals
-                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, B, 1] - This could lose first axis if N = 1
+                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, 1, 1]
                 inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(inequality_plus_slack)
                 assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
                 assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
                 sum_inequality_penalty_scaled += inequality_penalty_scaled
                 sum_inequality_lambda_scaled += inequality_lambda_scaled
 
-        # Return negative of augmented Lagrangian
+        # Return augmented Lagrangian
         al = tf.squeeze(objective_vals + sum_equality_lambda_scaled + sum_inequality_lambda_scaled + sum_equality_penalty_scaled + sum_inequality_penalty_scaled, -1)
         return al
 
@@ -1536,12 +1537,14 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         Form negative of augmented Lagrangian (since acquisition function optimiser *maximises* the returned acquisition
         function)
 
-        :param x: Array of points at which to evaluate the augmented Lagrangian of shape [N, B, D] (middle axis is for batching
-                  when calling the sampled trajectories)
+        :param x: Array of points at which to evaluate the augmented Lagrangian of shape [N, B, D] (middle axis is for
+                  batching when calling the sampled trajectories)
         :return: Values of negative augmented Lagrangian at given x values of shape [N, B]
         """
         objective_vals = self._objective_trajectory(x)
 
+        # Calculate equality constraint values using the sampled trajectory, and scale them with Lagrange multipliers
+        # and penalty parameter
         sum_equality_lambda_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         sum_equality_penalty_scaled = tf.zeros(objective_vals.shape, dtype=tf.float64)
         if self._equality_constraint_prefix is not None:
@@ -1565,7 +1568,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
                                                  self._penalty)  # [N, B, 1]
                 assert (slack_vals.shape == inequality_constraint_vals.shape)
                 inequality_plus_slack = inequality_constraint_vals + slack_vals
-                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, B, 1] - This could lose first axis if N = 1
+                inequality_lambda_scaled = self._inequality_lambda[tag] * inequality_plus_slack  # [N, B, 1]
                 inequality_penalty_scaled = (1 / (2 * self._penalty)) * tf.square(inequality_plus_slack)
                 assert (inequality_penalty_scaled.shape == sum_inequality_penalty_scaled.shape)
                 assert (inequality_lambda_scaled.shape == sum_inequality_lambda_scaled.shape)
@@ -1589,7 +1592,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         :return: Optimal slack values at each x location, of shape [N, B, 1]
         """
         tf.debugging.assert_rank(inequality_constraint_vals, 3)
-        slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals  # TODO: Perhaps make broadcasting explicit?
+        slack_vals = - (inequality_lambda * penalty) - inequality_constraint_vals
         slack_vals_non_neg = tf.nn.relu(slack_vals)
         tf.debugging.assert_shapes([(slack_vals_non_neg, (..., 1))])
         return slack_vals_non_neg
