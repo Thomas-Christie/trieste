@@ -2,7 +2,8 @@ from absl import app, flags
 import tensorflow as tf
 import numpy as np
 import trieste
-from trieste.acquisition.optimizer import generate_al_continuous_optimizer
+from trieste.acquisition.optimizer import generate_al_continuous_optimizer, generate_sobol_random_search_optimizer, \
+    generate_al_adam_optimizer, generate_random_search_optimizer
 from trieste.acquisition.function.new_constrained_thompson_sampling import BatchThompsonSamplingAugmentedLagrangian, FullyConsistentBatchThompsonSamplingAugmentedLagrangian
 from trieste.acquisition.rule import ALEfficientGlobalOptimization
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
@@ -30,16 +31,22 @@ flags.DEFINE_integer('batch_size', 1, 'Number of points to sample at each iterat
 flags.DEFINE_integer('num_initial_samples', 30, 'Number of random samples to fit models before starting BO.')
 flags.DEFINE_boolean('update_lagrange_via_kkt', False, 'Whether to update Lagrange multipliers using a gradient-based'
                                                        'approach based on KKT conditions.')
-flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce the penalty parameter more conservatively'
-                                                             'if no valid solutions have been found yet.')
-flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multipliers and penalty parameter in a mannner'
-                                               'which is fully consistent with the appendix of the original paper (which '
-                                               'differs from the body of the original paper).')
+flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce the penalty parameter more '
+                                                             'conservatively if no valid solutions have been found '
+                                                             'yet.')
+flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multipliers and penalty parameter in a '
+                                               'manner which is fully consistent with the appendix of the original '
+                                               'paper (which differs from the body of the original paper).')
 flags.DEFINE_enum('sampling_strategy', 'sobol', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
                                                                              'initial points.')
+flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfgs-b', 'adam'],
+                  'Which optimiser to use for optimising the acquisition function.')
+flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of starting points to randomly sample from'
+                                                                     'acquisition function when optimising it.')
 flags.DEFINE_boolean('known_objective', True, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/21-04-23/lockwood_slack/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/0909925-04-23/lockwood_no_optim/data/run_',
+                    'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, data):
@@ -191,8 +198,17 @@ def main(argv):
                                                                                 save_path=lambda_save_path,
                                                                                 num_bo_iters=FLAGS.num_bo_iterations)
 
-        rule = ALEfficientGlobalOptimization(augmented_lagrangian, optimizer=generate_al_continuous_optimizer(num_initial_samples=6000, num_optimization_runs=60),
-                                             num_query_points=FLAGS.batch_size)
+        if FLAGS.acquisition_fn_optimiser == 'l-bfgs-b':
+            optimizer = generate_al_continuous_optimizer(num_initial_samples=FLAGS.num_acquisition_optimiser_start_points,
+                                                         num_optimization_runs=2)
+        elif FLAGS.acquisition_fn_optimiser == 'sobol':
+            optimizer = generate_sobol_random_search_optimizer(num_samples=FLAGS.num_acquisition_optimiser_start_points)
+        elif FLAGS.acquisition_fn_optimiser == 'random':
+            optimizer = generate_random_search_optimizer(num_samples=FLAGS.num_acquisition_optimiser_start_points)
+        elif FLAGS.acquisition_fn_optimiser == 'adam':
+            optimizer = generate_al_adam_optimizer(num_initial_samples=FLAGS.num_acquisition_optimiser_start_points)
+
+        rule = ALEfficientGlobalOptimization(augmented_lagrangian, optimizer=optimizer, num_query_points=FLAGS.batch_size)
         bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
         data = bo.optimize(FLAGS.num_bo_iterations, initial_data, initial_models, rule,
                            track_state=True).try_get_final_datasets()

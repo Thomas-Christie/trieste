@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from collections import OrderedDict
 from typing import Mapping, Optional, cast, Callable
 
@@ -415,21 +414,8 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         self._inequality_lambda_tracker = {}
         self._equality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
-        self._stop_decreasing_penalty = False
         self._best_valid_observation = None  # Kept to None until a valid observation is found.
         self._conservative_penalty_decrease = conservative_penalty_decrease
-        self._trick_trajectory_observations = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                                               "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_trajectory_observations = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                                               "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_means = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                            "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_vars = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                           "EQUALITY_CONSTRAINT_TWO": []}
-        self._trick_means = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                             "EQUALITY_CONSTRAINT_TWO": []}
-        self._trick_vars = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                            "EQUALITY_CONSTRAINT_TWO": []}
         if self._inequality_lambda is not None:
             for k, v in self._inequality_lambda.items():
                 self._inequality_lambda_tracker[k] = [v]
@@ -591,19 +577,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
                     " objective data, but the objective data is empty.",
         )
 
-        # true_optim = tf.Variable([[[0.94769, 0.46856]]], dtype=tf.float64)
-        # trick_optim = tf.Variable([[[0.35262327, 0.45821539]]], dtype=tf.float64)
-        # constraint_strings = ['INEQUALITY_CONSTRAINT_ONE', 'EQUALITY_CONSTRAINT_ONE', 'EQUALITY_CONSTRAINT_TWO']
-        # for cons_string in constraint_strings:
-        #     trick_val_mean, trick_val_var = models[cons_string].predict(trick_optim)
-        #     true_val_mean, true_val_var = models[cons_string].predict(true_optim)
-        #     print(f"{cons_string} Mean +- Var @ Trick Optim: {np.round(trick_val_mean.numpy(), 5)} +- {np.round(trick_val_var.numpy(), 5)}")
-        #     print(f"{cons_string} Mean +- Var @ True Optim: {np.round(true_val_mean.numpy(), 5)} +- {np.round(true_val_var.numpy(), 5)}")
-        #     self._trick_means[cons_string].append(trick_val_mean)
-        #     self._trick_vars[cons_string].append(trick_val_var)
-        #     self._true_means[cons_string].append(true_val_mean)
-        #     self._true_vars[cons_string].append(true_val_var)
-
         # Find the best valid objective value seen so far
         satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
         for tag, dataset in datasets.items():
@@ -638,25 +611,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             updated_trajectory = sampler.update_trajectory(old_trajectory)
             self._equality_constraint_trajectories[tag] = updated_trajectory
 
-        # for cons_string in constraint_strings:
-        #     if cons_string == 'INEQUALITY_CONSTRAINT_ONE':
-        #         trick_val = tf.squeeze(self._inequality_constraint_trajectories[cons_string](trick_optim))
-        #         true_val = tf.squeeze(self._inequality_constraint_trajectories[cons_string](true_optim))
-        #     else:
-        #         trick_val = tf.squeeze(self._equality_constraint_trajectories[cons_string](trick_optim))
-        #         true_val = tf.squeeze(self._equality_constraint_trajectories[cons_string](true_optim))
-        #     print(f"{cons_string} @ Trick Optim: {trick_val}")
-        #     print(f"{cons_string} @ True Optim: {true_val}")
-        #     self._trick_trajectory_observations[cons_string].append(trick_val)
-        #     self._true_trajectory_observations[cons_string].append(true_val)
-
-        # print(f"Equality Constraint One @ Trick Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_ONE'](trick_optim))}")
-        # print(f"Equality Constraint One @ True Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_ONE'](true_optim))}")
-        # print(f"Equality Constraint Two @ Trick Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_TWO'](trick_optim))}")
-        # print(f"Equality Constraint Two @ True Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_TWO'](true_optim))}")
-        # print(f"Objective @ Trick Optim: {tf.squeeze(self._objective_trajectory(trick_optim))}")
-        # print(f"Objective @ True Optim: {tf.squeeze(self._objective_trajectory(true_optim))}")
-
         # Update Lagrange multipliers
         if self._update_lagrange_via_kkt:
             self._kkt_lagrange_update(datasets)
@@ -664,8 +618,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
             self._default_lagrange_update(datasets)
 
         # Update penalty
-        if not self._stop_decreasing_penalty:
-            self._update_penalty(datasets)
+        self._update_penalty(datasets)
 
         opt_objective_x = datasets[self._objective_tag].query_points[-self._batch_size:]
         opt_objective_value = datasets[self._objective_tag].observations[-self._batch_size:]
@@ -695,24 +648,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
 
                 with open(self._save_path + "_penalty_progression.pkl", "wb") as fp:
                     pickle.dump(self._penalty_tracker, fp)
-
-                # with open(self._save_path + "_trick_location_trajectory_observations.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_trajectory_observations, fp)
-                #
-                # with open(self._save_path + "_true_location_trajectory_observations.pkl", "wb") as fp:
-                #     pickle.dump(self._true_trajectory_observations, fp)
-                #
-                # with open(self._save_path + "_true_location_means.pkl", "wb") as fp:
-                #     pickle.dump(self._true_means, fp)
-                #
-                # with open(self._save_path + "_true_location_vars.pkl", "wb") as fp:
-                #     pickle.dump(self._true_vars, fp)
-                #
-                # with open(self._save_path + "_trick_location_means.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_means, fp)
-                #
-                # with open(self._save_path + "_trick_location_vars.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_vars, fp)
 
         if self._plot:
             self._plot_models(opt_objective_x)
@@ -932,17 +867,6 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         else:
             print(f"Satisfied")
 
-    def increase_penalty_and_return_acquisition_function(self):
-        """
-        Occasionally once penalty becomes very small L-BFGS-B will fail. I strongly suspect this is due to the gradient
-        near the constraint satisfaction boundary becoming extremely large. If this starts to happen, we stop decreasing
-        the penalty parameter and increase, until optimisation starts to work again.
-        """
-        self._stop_decreasing_penalty = True
-        self._penalty = 2.0 * self._penalty
-        self._augmented_lagrangian_fn = self._augmented_lagrangian
-        return self._augmented_lagrangian_fn
-
     def _augmented_lagrangian(
             self,
             x: tf.Tensor) -> tf.Tensor:
@@ -1055,6 +979,7 @@ class BatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuil
         #     plt.savefig(fp)
         plt.show()
 
+
 # NOTE - Below updates penalties and Lagrange multipliers as in the appendix of the original paper (which slightly
 # differs from the main paper). The performance difference is negligible.
 class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuilder[HasTrajectorySampler]):
@@ -1132,21 +1057,8 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         self._inequality_lambda_tracker = {}
         self._equality_lambda_tracker = {}
         self._penalty_tracker = [self._penalty]
-        self._stop_decreasing_penalty = False
         self._best_valid_observation = None  # Kept to None until a valid observation is found.
         self._conservative_penalty_decrease = conservative_penalty_decrease
-        self._trick_trajectory_observations = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                                               "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_trajectory_observations = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                                               "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_means = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                            "EQUALITY_CONSTRAINT_TWO": []}
-        self._true_vars = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                           "EQUALITY_CONSTRAINT_TWO": []}
-        self._trick_means = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                             "EQUALITY_CONSTRAINT_TWO": []}
-        self._trick_vars = {"INEQUALITY_CONSTRAINT_ONE": [], "EQUALITY_CONSTRAINT_ONE": [],
-                            "EQUALITY_CONSTRAINT_TWO": []}
         if self._inequality_lambda is not None:
             for k, v in self._inequality_lambda.items():
                 self._inequality_lambda_tracker[k] = [v]
@@ -1303,7 +1215,6 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         self._iteration += 1
         print(f"Iteration: {self._iteration}")
-        print(f"Stop Decreasing Penalty: {self._stop_decreasing_penalty}")
         datasets = cast(Mapping[Tag, Dataset], datasets)
 
         objective_dataset = datasets[self._objective_tag]
@@ -1313,19 +1224,6 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
             message="Lagrange multiplier updates are defined with respect to existing points in the"
                     " objective data, but the objective data is empty.",
         )
-
-        # true_optim = tf.Variable([[[0.94769, 0.46856]]], dtype=tf.float64)
-        # trick_optim = tf.Variable([[[0.35262327, 0.45821539]]], dtype=tf.float64)
-        # constraint_strings = ['INEQUALITY_CONSTRAINT_ONE', 'EQUALITY_CONSTRAINT_ONE', 'EQUALITY_CONSTRAINT_TWO']
-        # for cons_string in constraint_strings:
-        #     trick_val_mean, trick_val_var = models[cons_string].predict(trick_optim)
-        #     true_val_mean, true_val_var = models[cons_string].predict(true_optim)
-        #     print(f"{cons_string} Mean +- Var @ Trick Optim: {np.round(trick_val_mean.numpy(), 5)} +- {np.round(trick_val_var.numpy(), 5)}")
-        #     print(f"{cons_string} Mean +- Var @ True Optim: {np.round(true_val_mean.numpy(), 5)} +- {np.round(true_val_var.numpy(), 5)}")
-        #     self._trick_means[cons_string].append(trick_val_mean)
-        #     self._trick_vars[cons_string].append(trick_val_var)
-        #     self._true_means[cons_string].append(true_val_mean)
-        #     self._true_vars[cons_string].append(true_val_var)
 
         # Find the best valid objective value seen so far
         satisfied_mask = tf.constant(value=True, shape=datasets[self._objective_tag].observations.shape)
@@ -1359,25 +1257,6 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
             updated_trajectory = sampler.update_trajectory(old_trajectory)
             self._equality_constraint_trajectories[tag] = updated_trajectory
 
-        # for cons_string in constraint_strings:
-        #     if cons_string == 'INEQUALITY_CONSTRAINT_ONE':
-        #         trick_val = tf.squeeze(self._inequality_constraint_trajectories[cons_string](trick_optim))
-        #         true_val = tf.squeeze(self._inequality_constraint_trajectories[cons_string](true_optim))
-        #     else:
-        #         trick_val = tf.squeeze(self._equality_constraint_trajectories[cons_string](trick_optim))
-        #         true_val = tf.squeeze(self._equality_constraint_trajectories[cons_string](true_optim))
-        #     print(f"{cons_string} @ Trick Optim: {trick_val}")
-        #     print(f"{cons_string} @ True Optim: {true_val}")
-        #     self._trick_trajectory_observations[cons_string].append(trick_val)
-        #     self._true_trajectory_observations[cons_string].append(true_val)
-
-        # print(f"Equality Constraint One @ Trick Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_ONE'](trick_optim))}")
-        # print(f"Equality Constraint One @ True Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_ONE'](true_optim))}")
-        # print(f"Equality Constraint Two @ Trick Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_TWO'](trick_optim))}")
-        # print(f"Equality Constraint Two @ True Optim: {tf.squeeze(self._equality_constraint_trajectories['EQUALITY_CONSTRAINT_TWO'](true_optim))}")
-        # print(f"Objective @ Trick Optim: {tf.squeeze(self._objective_trajectory(trick_optim))}")
-        # print(f"Objective @ True Optim: {tf.squeeze(self._objective_trajectory(true_optim))}")
-
         # Obtain Augmented Lagrangian values at observed points before updating Lagrange multipliers and penalty term
         augmented_lagrangian_values_at_observed_points = self._deterministic_augmented_lagrangian(datasets)
         best_observed_augmented_lagrangian_idx = int(tf.argmin(augmented_lagrangian_values_at_observed_points))
@@ -1389,8 +1268,7 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
             self._default_lagrange_update(datasets, best_observed_augmented_lagrangian_idx)
 
         # Update penalty
-        if not self._stop_decreasing_penalty:
-            self._update_penalty(datasets, best_observed_augmented_lagrangian_idx)
+        self._update_penalty(datasets, best_observed_augmented_lagrangian_idx)
 
         opt_objective_x = datasets[self._objective_tag].query_points[-self._batch_size:]
         opt_objective_value = datasets[self._objective_tag].observations[-self._batch_size:]
@@ -1422,24 +1300,6 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
 
                 with open(self._save_path + "_penalty_progression.pkl", "wb") as fp:
                     pickle.dump(self._penalty_tracker, fp)
-
-                # with open(self._save_path + "_trick_location_trajectory_observations.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_trajectory_observations, fp)
-                #
-                # with open(self._save_path + "_true_location_trajectory_observations.pkl", "wb") as fp:
-                #     pickle.dump(self._true_trajectory_observations, fp)
-                #
-                # with open(self._save_path + "_true_location_means.pkl", "wb") as fp:
-                #     pickle.dump(self._true_means, fp)
-                #
-                # with open(self._save_path + "_true_location_vars.pkl", "wb") as fp:
-                #     pickle.dump(self._true_vars, fp)
-                #
-                # with open(self._save_path + "_trick_location_means.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_means, fp)
-                #
-                # with open(self._save_path + "_trick_location_vars.pkl", "wb") as fp:
-                #     pickle.dump(self._trick_vars, fp)
 
         if self._plot:
             self._plot_models(opt_objective_x)
@@ -1668,17 +1528,6 @@ class FullyConsistentBatchThompsonSamplingAugmentedLagrangian(VectorizedAcquisit
         # Return negative of augmented Lagrangian
         al = tf.squeeze(objective_vals + sum_equality_lambda_scaled + sum_inequality_lambda_scaled + sum_equality_penalty_scaled + sum_inequality_penalty_scaled, -1)
         return al
-
-    def increase_penalty_and_return_acquisition_function(self):
-        """
-        Occasionally once penalty becomes very small L-BFGS-B will fail. I strongly suspect this is due to the gradient
-        near the constraint satisfaction boundary becoming extremely large. If this starts to happen, we stop decreasing
-        the penalty parameter and increase, until optimisation starts to work again.
-        """
-        self._stop_decreasing_penalty = True
-        self._penalty = 2.0 * self._penalty
-        self._augmented_lagrangian_fn = self._negative_augmented_lagrangian
-        return self._augmented_lagrangian_fn
 
     def _negative_augmented_lagrangian(
             self,

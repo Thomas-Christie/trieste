@@ -372,7 +372,6 @@ def generate_continuous_optimizer(
 def generate_al_continuous_optimizer(
     num_initial_samples: int = NUM_SAMPLES_MIN,
     num_optimization_runs: int = 10,
-    num_recovery_runs: int = 10,
     optimizer_args: Optional[dict[str, Any]] = None,
 ) -> AcquisitionOptimizer[Box | TaggedProductSearchSpace]:
     """
@@ -394,13 +393,11 @@ def generate_al_continuous_optimizer(
     optimizations in parallel, each starting from one of the best `num_optimization_runs` initial
     query points.
 
-    If all `num_optimization_runs` optimizations fail to converge then we run
-    `num_recovery_runs` additional runs starting from random locations (also ran in parallel).
+    If all `num_optimization_runs` optimizations fail to converge then we simply return the best random locations.
 
     :param num_initial_samples: The size of the random sample used to find the starting point(s) of
         the optimization.
     :param num_optimization_runs: The number of separate optimizations to run.
-    :param num_recovery_runs: The maximum number of recovery optimization runs in case of failure.
     :param optimizer_args: The keyword arguments to pass to the Scipy L-BFGS-B optimizer.
         Check `minimize` method  of :class:`~scipy.optimize` for details of which arguments
         can be passed. Note that method, jac and bounds cannot/should not be changed.
@@ -419,9 +416,6 @@ def generate_al_continuous_optimizer(
             least num_optimization_runs {num_optimization_runs}
             """
         )
-
-    if num_recovery_runs <= -1:
-        raise ValueError(f"num_recovery_runs must be zero or greater, got {num_recovery_runs}")
 
     def al_optimize_continuous(
         space: Box | TaggedProductSearchSpace,
@@ -479,9 +473,9 @@ def generate_al_continuous_optimizer(
         top_k_points = tf.gather(
             tiled_candidates, top_k_indices, batch_dims=1
         )  # [V, num_optimization_runs - 1, D]
-        initial_points = tf.transpose(top_k_points, [1, 0, 2])  # [num_optimization_runs - 1,V,D]
-        most_recent_query_point_repeated = tf.repeat(most_recent_query_point, repeats=initial_points.shape[1], axis=0)[None, ...]  # [1, V, D]
-        initial_points = tf.concat([initial_points, most_recent_query_point_repeated], axis=0)  # [num_optimization_runs, V, D]
+        top_points = tf.transpose(top_k_points, [1, 0, 2])  # [num_optimization_runs - 1,V,D]
+        most_recent_query_point_repeated = tf.repeat(most_recent_query_point, repeats=top_points.shape[1], axis=0)[None, ...]  # [1, V, D]
+        initial_points = tf.concat([top_points, most_recent_query_point_repeated], axis=0)  # [num_optimization_runs, V, D]
 
         (
             successes,
@@ -498,79 +492,18 @@ def generate_al_continuous_optimizer(
         successful_optimization = tf.reduce_all(
             tf.reduce_any(successes, axis=0)
         )  # Check that at least one optimization was successful for each function
-        total_nfev = tf.reduce_max(nfev)  # acquisition function is evaluated in parallel
 
-        recovery_run = False
-        if (
-            num_recovery_runs and not successful_optimization
-        ):  # if all optimizations failed for a function then try again from random starts
-            random_points = space.sample(num_recovery_runs)[:, None, :]  # [num_recovery_runs, 1, D]
-            tiled_random_points = tf.tile(random_points, [1, V, 1])  # [num_recovery_runs, V, D]
+        print(f"Successful Optimisation: {successful_optimization}")
 
-            (
-                recovery_successes,
-                recovery_fun_values,
-                recovery_chosen_x,
-                recovery_nfev,
-            ) = _perform_parallel_continuous_optimization(
-                target_func, space, tiled_random_points, optimizer_args or {}
-            )
-
-            successes = tf.concat(
-                [successes, recovery_successes], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V]
-            fun_values = tf.concat(
-                [fun_values, recovery_fun_values], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V]
-            chosen_x = tf.concat(
-                [chosen_x, recovery_chosen_x], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V, D]
-
-            successful_optimization = tf.reduce_all(
-                tf.reduce_any(successes, axis=0)
-            )  # Check that at least one optimization was successful for each function
-            total_nfev += tf.reduce_max(recovery_nfev)
-            recovery_run = True
-
-        if not successful_optimization:  # return error if still failed
-            raise FailedOptimizationError(
-                f"""
-                    Acquisition function optimization failed,
-                    even after {num_recovery_runs + num_optimization_runs} restarts.
-                    """
-            )
-
-        summary_writer = logging.get_tensorboard_writer()
-        if summary_writer:
-            with summary_writer.as_default(step=logging.get_step_number()):
-
-                logging.scalar("spo_af_evaluations", total_nfev)
-                if recovery_run:
-                    logging.text(
-                        "spo_recovery_run",
-                        f"Acquisition function optimization failed after {num_optimization_runs} "
-                        f"optimization runs, requiring recovery runs",
-                    )
-
-                _target_func: AcquisitionFunction = target_func  # make mypy happy
-
-                def improvements() -> tf.Tensor:
-                    best_initial_values = tf.math.reduce_max(_target_func(initial_points), axis=0)
-                    best_values = tf.math.reduce_max(fun_values, axis=0)
-                    improve = best_values - tf.cast(best_initial_values, best_values.dtype)
-                    return improve[0] if V == 1 else improve
-
-                if V == 1:
-                    logging.scalar("spo_improvement_on_initial_samples", improvements)
-                else:
-                    logging.histogram("spo_improvement_on_initial_samples", improvements)
-
-        best_run_ids = tf.math.argmax(fun_values, axis=0)  # [V]
-        chosen_points = tf.gather(
-            tf.transpose(chosen_x, [1, 0, 2]), best_run_ids, batch_dims=1
-        )  # [V, D]
-
-        return chosen_points
+        if not successful_optimization:
+            print(f"L-BFGS-B Failed")
+            return top_points[0]  # [V, D]
+        else:
+            best_run_ids = tf.math.argmax(fun_values, axis=0)  # [V]
+            chosen_points = tf.gather(
+                tf.transpose(chosen_x, [1, 0, 2]), best_run_ids, batch_dims=1
+            )  # [V, D]
+            return chosen_points
 
     return al_optimize_continuous
 
@@ -754,6 +687,7 @@ class ScipyOptimizerGreenlet(gr.greenlet):  # type: ignore[misc]
         optimizer_args = dict(
             dict(method=method, constraints=constraints), **(optimizer_args or {})
         )
+        optimizer_args['options'] = {'maxls': 40}  # Increase max line searches to 40 as function becomes difficult to optimise
         return spo.minimize(
             lambda x: value_and_gradient(x)[0],
             start,
@@ -905,6 +839,115 @@ def batchify_vectorize(
     return optimizer
 
 
+# NOTE - Below is currently only written for batch size = 1
+def generate_al_adam_optimizer(
+    num_initial_samples: int = NUM_SAMPLES_MIN,
+) -> AcquisitionOptimizer[Box | TaggedProductSearchSpace]:
+    """
+    NOTE: This is a modification of the plain 'generate_continuous_optimizer' function to generate an
+    optimizer for the Augmented Lagrangian acquisition function which takes the most recently queried point as
+    an argument. This uses Tensorflow's Adam optimiser.
+
+    Generate a gradient-based optimizer for :class:'Box' and :class:'TaggedProductSearchSpace'
+    spaces and batches of size 1. In the case of a :class:'TaggedProductSearchSpace', We perform
+    gradient-based optimization across all :class:'Box' subspaces, starting from the best location
+    found across a sample of `num_initial_samples` random points.
+
+    We advise the user to either use the default `NUM_SAMPLES_MIN` for `num_initial_samples`, or
+    `NUM_SAMPLES_DIM` times the dimensionality of the search space, whichever is greater.
+    Similarly, for `num_optimization_runs`, we recommend using `NUM_RUNS_DIM` times the
+    dimensionality of the search space.
+
+    This optimizer uses Tensorflow's Adam optimizer.
+
+    :param num_initial_samples: The size of the random sample used to find the starting point(s) of
+        the optimization.
+    :return: The acquisition optimizer.
+    """
+
+    def al_adam_optimize_continuous(
+        space: Box | TaggedProductSearchSpace,
+        target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+        most_recent_query_point: TensorType
+    ) -> TensorType:
+        """
+        A gradient-based :const:`AcquisitionOptimizer` for :class:'Box'
+        and :class:`TaggedProductSearchSpace' spaces.
+
+        For :class:'TaggedProductSearchSpace' we only apply gradient updates to
+        its class:'Box' subspaces.
+
+        :param space: The space over which to search.
+        :param target_func: The function to maximise, with input shape [..., V, D] and output shape
+                [..., V].
+        :param most_recent_query_point: Most recently queried point. Used as a starting point for L-BFGS-B.
+        :return: The V points in ``space`` that maximises``target_func``, with shape [V, D].
+        """
+
+        if isinstance(target_func, tuple):  # check if we need a vectorized optimizer
+            target_func, V = target_func
+        else:
+            V = 1
+
+        if V != 1:
+            raise ValueError(f"Adam optimise currently only supports batches of size 1.")
+
+        candidates = space.sample(num_initial_samples - 1)[:, None, :]  # [num_initial_samples - 1, 1, D]
+        candidates = tf.concat((candidates, most_recent_query_point[None, ...]), axis=0)
+        tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
+
+        target_func_values = target_func(tiled_candidates)  # [num_samples, V]
+        tf.debugging.assert_shapes(
+            [(target_func_values, ("_", V))],
+            message=(
+                f"""
+                The result of function target_func has shape
+                {tf.shape(target_func_values)}, however, expected a trailing
+                dimension of size {V}.
+                """
+            ),
+        )
+
+        _, top_k_indices = tf.math.top_k(
+            tf.transpose(target_func_values), k=1
+        )  # [1, num_optimization_runs] or [V, num_optimization_runs]
+
+        tiled_candidates = tf.transpose(tiled_candidates, [1, 0, 2])  # [V, num_initial_samples, D]
+        top_k_points = tf.gather(
+            tiled_candidates, top_k_indices, batch_dims=1
+        )  # [V, 1, D]
+        initial_point = tf.transpose(top_k_points, [1, 0, 2])  # [1, V, D]
+
+        lower_lim = tf.Variable(space.lower[0], trainable=False, dtype=tf.float64)
+        upper_lim = tf.Variable(space.upper[0], trainable=False, dtype=tf.float64)
+
+        # Transform initial point for optimisation
+        optimised_point = tf.math.log((initial_point - lower_lim)/(upper_lim - initial_point))  # [1, V, D]
+        optimised_point = tf.Variable(optimised_point, name='optimised_point', trainable=True, dtype=tf.float64)
+
+        def loss_fn():
+            # Transform variable we're optimising over to enforce bounds
+            y = lower_lim + ((upper_lim - lower_lim) / (1 + tf.math.exp(-optimised_point)))
+            return - target_func(y)  # We're trying to *maximise* 'target_func', but Adam *minimises* it
+
+        opt = tf.keras.optimizers.Adam(learning_rate=0.001)
+        for i in range(200):
+            opt.minimize(loss_fn, var_list=[optimised_point])
+
+        # Transform optimised point back into original function space (which will be within the bounds enforced)
+        optimised_point = lower_lim + ((upper_lim - lower_lim) / (1 + tf.math.exp(-optimised_point)))
+
+        # We're trying to *maximise* 'target_func', so if our optimised point is actually worse than the initial point(
+        # which could be the case on rare occasions due to the Adam optimiser), we return the initial point.
+        if target_func(initial_point) > target_func(optimised_point):
+            return initial_point[0]
+        else:
+            print("Returning Optimised Point")
+            return optimised_point[0]
+
+    return al_adam_optimize_continuous
+
+
 def generate_random_search_optimizer(
     num_samples: int = NUM_SAMPLES_MIN,
 ) -> AcquisitionOptimizer[SearchSpace]:
@@ -922,8 +965,9 @@ def generate_random_search_optimizer(
         raise ValueError(f"num_samples must be positive, got {num_samples}")
 
     def optimize_random(
-        space: SearchSpace,
+        space: Box,
         target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+        most_recent_query_point: TensorType = None
     ) -> TensorType:
         """
         A random search :const:`AcquisitionOptimizer` defined for
@@ -944,3 +988,48 @@ def generate_random_search_optimizer(
         return _get_max_discrete_points(points, target_func)
 
     return optimize_random
+
+
+def generate_sobol_random_search_optimizer(
+    num_samples: int = NUM_SAMPLES_MIN,
+) -> AcquisitionOptimizer[Box]:
+    """
+    Generate an acquisition optimizer that samples `num_samples` random points across the space using sobol indices.
+    The default is to sample at `NUM_SAMPLES_MIN` locations.
+
+    We advise the user to either use the default `NUM_SAMPLES_MIN` for `num_samples`, or
+    `NUM_SAMPLES_DIM` times the dimensionality of the search space, whichever is greater.
+
+    :param num_samples: The number of random points to sample.
+    :return: The acquisition optimizer.
+    """
+    if num_samples <= 0:
+        raise ValueError(f"num_samples must be positive, got {num_samples}")
+
+    def optimize_random(
+        space: Box,
+        target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+        most_recent_query_point: TensorType = None,
+    ) -> TensorType:
+        """
+        A random search :const:`AcquisitionOptimizer` defined for
+        any :class:'SearchSpace' with a :meth:`sample`. If we have a :class:'DiscreteSearchSpace'
+        with fewer than `num_samples` points, then we query all the points in the space.
+
+        When this functions receives an acquisition-integer tuple as its `target_func`,it
+        optimizes each of the individual V functions making up `target_func`, i.e.
+        evaluating `num_samples` samples for each of the individual V functions making up
+        target_func.
+
+        :param space: The space over which to search.
+        :param target_func: The function to maximise, with input shape [..., V, D] and output shape
+                [..., V].
+        :param most_recent_query_point: Most recent query point queried, used in Augmented Lagrangian, not used by this
+                                        function.
+        :return: The V points in ``space`` that maximises ``target_func``, with shape [V, D].
+        """
+        points = space.sample_sobol(num_samples)[:, None, :]  # [..., 1, D]
+        return _get_max_discrete_points(points, target_func)
+
+    return optimize_random
+

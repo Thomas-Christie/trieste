@@ -489,23 +489,8 @@ class ALEfficientGlobalOptimization(
 
         dataset_keys = list(datasets.keys())
         most_recent_query_point = datasets[dataset_keys[0]].query_points[-1][None, ...]
-        optimisation_failed = True
-        num_optimisation_attempts = 0
         with tf.name_scope("ALEGO.optimizer" + "[0]" * greedy):
-            while optimisation_failed and num_optimisation_attempts < MAX_OPTIMISATION_ATTEMPTS:
-                try:
-                    num_optimisation_attempts += 1
-                    points = self._optimizer(search_space, self._acquisition_function, most_recent_query_point)
-                    print(f"Successful Optimisation")
-                    optimisation_failed = False
-                except FailedOptimizationError as e:
-                    print(f"Optimisation Failed, Number of Attempts so Far: {num_optimisation_attempts}")
-                    if num_optimisation_attempts == MAX_OPTIMISATION_ATTEMPTS:
-                        raise e
-                    else:
-                        # If optimization failed, we increase penalty and try again, as once penalty becomes very
-                        # small it can cause L-BFGS-B to fail.
-                        self._acquisition_function = self._builder.increase_penalty_and_return_acquisition_function()
+            points = self._optimizer(search_space, self._acquisition_function, most_recent_query_point)
 
         if summary_writer:
             with summary_writer.as_default(step=step_number):
