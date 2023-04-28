@@ -40,13 +40,13 @@ flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multi
                                                'paper (which differs from the body of the original paper).')
 flags.DEFINE_enum('sampling_strategy', 'sobol', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
                                                                              'initial points.')
-flags.DEFINE_enum('acquisition_fn_optimiser', 'l-bfgs-b', ['random', 'sobol', 'l-bfgs-b', 'adam'],
+flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfgs-b', 'adam'],
                   'Which optimiser to use for optimising the acquisition function.')
 flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of starting points to randomly sample from'
                                                                      'acquisition function when optimising it.')
 flags.DEFINE_boolean('known_objective', False, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/l_bfgs_b/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/lsq/adam/data/run_',
                     'Prefix of path to save results to.')
 
 
