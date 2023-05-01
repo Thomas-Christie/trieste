@@ -892,8 +892,8 @@ def generate_al_adam_optimizer(
         if V != 1:
             raise ValueError(f"Adam optimise currently only supports batches of size 1.")
 
-        candidates = space.sample(num_initial_samples - 1)[:, None, :]  # [num_initial_samples - 1, 1, D]
-        candidates = tf.concat((candidates, most_recent_query_point[None, ...]), axis=0)
+        candidates = space.sample(num_initial_samples)[:, None, :]  # [num_initial_samples, 1, D]
+        # candidates = tf.concat((candidates, most_recent_query_point[None, ...]), axis=0)
         tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
 
         target_func_values = target_func(tiled_candidates)  # [num_samples, V]
