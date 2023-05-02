@@ -23,13 +23,13 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_integer('num_experiments', 20, 'Number of repeats of experiment to run.')
-flags.DEFINE_integer('num_bo_iterations', 370, 'Number of iterations of Bayesian optimisation to run for.')
+flags.DEFINE_integer('num_experiments', 50, 'Number of repeats of experiment to run.')
+flags.DEFINE_integer('num_bo_iterations', 140, 'Number of iterations of Bayesian optimisation to run for.')
 flags.DEFINE_float('epsilon', 0.01, 'Bound within which equality constraints are considered to be satisfied.')
-flags.DEFINE_enum('problem', 'LOCKWOOD', ['LSQ', 'GSBP', 'LOCKWOOD'], 'Test problem to use.')
+flags.DEFINE_enum('problem', 'GSBP', ['LSQ', 'GSBP', 'LOCKWOOD'], 'Test problem to use.')
 flags.DEFINE_integer('num_rff_features', 1000, 'Number of Random Fourier Features to use when approximating the kernel.')
 flags.DEFINE_integer('batch_size', 1, 'Number of points to sample at each iteration of BO.')
-flags.DEFINE_integer('num_initial_samples', 30, 'Number of random samples to fit models before starting BO.')
+flags.DEFINE_integer('num_initial_samples', 10, 'Number of random samples to fit models before starting BO.')
 flags.DEFINE_boolean('update_lagrange_via_kkt', False, 'Whether to update Lagrange multipliers using a gradient-based'
                                                        'approach based on KKT conditions.')
 flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce the penalty parameter more '
@@ -44,9 +44,9 @@ flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfg
                   'Which optimiser to use for optimising the acquisition function.')
 flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of starting points to randomly sample from'
                                                                      'acquisition function when optimising it.')
-flags.DEFINE_boolean('known_objective', True, 'Whether to use a known objective function or model it with a surrogate.')
+flags.DEFINE_boolean('known_objective', False, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/gsbp/adam_no_prev_aggressive/data/run_',
                     'Prefix of path to save results to.')
 
 
