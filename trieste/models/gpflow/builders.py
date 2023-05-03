@@ -85,7 +85,8 @@ def build_gpr(
     likelihood_variance: Optional[float] = None,
     trainable_likelihood: bool = False,
     kernel: Optional[gpflow.kernels.Kernel] = None,
-    mean: Optional[gpflow.functions.MeanFunction] = None
+    mean: Optional[gpflow.functions.MeanFunction] = None,
+    kernel_name: str = "matern52"
 ) -> GPR:
     """
     Build a :class:`~gpflow.models.GPR` model with sensible initial parameters and
@@ -116,6 +117,9 @@ def build_gpr(
         non-trainable. By default set to `False`.
     :param kernel: The kernel to use in the model, defaults to letting the function set up a
         :class:`~gpflow.kernels.Matern52` kernel.
+    :param kernel_name: Name of kernel to use in the model (either 'squared_exponential' or 'matern52') - will
+        initialise given kernel with Trieste default parameters (bit hacky but done to quickly run some experiments with
+        squared exponential kernel).
     :param mean: The mean to use in the model.
     :return: A :class:`~gpflow.models.GPR` model.
     """
@@ -127,7 +131,7 @@ def build_gpr(
             " but got neither"
         )
     elif kernel is None and search_space is not None:
-        kernel = _get_kernel(empirical_variance, search_space, kernel_priors, kernel_priors)
+        kernel = _get_kernel(empirical_variance, search_space, kernel_priors, kernel_priors, kernel_name)
 
     if mean is None:
         mean = _get_mean_function(empirical_mean)
@@ -379,11 +383,16 @@ def _get_kernel(
     search_space: SearchSpace,
     add_prior_to_lengthscale: bool,
     add_prior_to_variance: bool,
+    kernel_name: str,
 ) -> gpflow.kernels.Kernel:
 
     lengthscales = _get_lengthscales(search_space)
 
-    kernel = gpflow.kernels.Matern52(variance=variance, lengthscales=lengthscales)
+    if kernel_name == "matern52":
+        kernel = gpflow.kernels.Matern52(variance=variance, lengthscales=lengthscales)
+    elif kernel_name == "squared_exponential":
+        print("Using Squared Exponential")
+        kernel = gpflow.kernels.SquaredExponential(variance=variance, lengthscales=lengthscales)
 
     if add_prior_to_lengthscale:
         kernel.lengthscales.prior = tfp.distributions.LogNormal(

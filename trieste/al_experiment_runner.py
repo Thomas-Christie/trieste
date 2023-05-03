@@ -45,13 +45,14 @@ flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfg
 flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of starting points to randomly sample from'
                                                                      'acquisition function when optimising it.')
 flags.DEFINE_boolean('known_objective', False, 'Whether to use a known objective function or model it with a surrogate.')
+flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/gsbp/adam_no_prev_aggressive/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam_no_prev/data/run_',
                     'Prefix of path to save results to.')
 
 
-def create_model(search_space, num_rff_features, data):
-    gpr = build_gpr(data, search_space, likelihood_variance=1e-7, mean=gpflow.mean_functions.Zero())
+def create_model(search_space, num_rff_features, kernel_name, data):
+    gpr = build_gpr(data, search_space, likelihood_variance=1e-6, mean=gpflow.mean_functions.Zero(), kernel_name=kernel_name)
     return GaussianProcessRegression(gpr, num_rff_features=num_rff_features, use_decoupled_sampler=True)
 
 
@@ -94,7 +95,7 @@ def main(argv):
             initial_data = lockwood_constraint_observer(initial_inputs)
         else:
             initial_data = observer(initial_inputs)
-        initial_models = trieste.utils.map_values(partial(create_model, search_space, FLAGS.num_rff_features),
+        initial_models = trieste.utils.map_values(partial(create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name),
                                                   initial_data)
 
         if FLAGS.known_objective:
