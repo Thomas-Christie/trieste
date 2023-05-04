@@ -47,7 +47,7 @@ flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of 
 flags.DEFINE_boolean('known_objective', False, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam_no_prev/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/gsbp/adam_no_prev_rbf_aggressive/data/run_',
                     'Prefix of path to save results to.')
 
 
