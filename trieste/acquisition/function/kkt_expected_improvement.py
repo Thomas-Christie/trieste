@@ -168,14 +168,14 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
             self._plot_models(most_recent_query_point)
 
         # Update models
-        # TODO: Currently using deepcopy for producing consistent plots, may remove in future
+        # If consistent plots are required, use 'copy.deepcopy()' on models, as has been done previously.
         for tag, model in models.items():
             if tag.startswith(self._objective_tag):
-                self._objective_model = copy.deepcopy(model)
+                self._objective_model = model
             elif (self._equality_constraint_prefix is not None) and (tag.startswith(self._equality_constraint_prefix)):
-                self._equality_constraint_models[tag] = copy.deepcopy(model)
+                self._equality_constraint_models[tag] = model
             elif (self._inequality_constraint_prefix is not None) and (tag.startswith(self._inequality_constraint_prefix)):
-                self._inequality_constraint_models[tag] = copy.deepcopy(model)
+                self._inequality_constraint_models[tag] = model
 
         opt_x = tf.Variable([[0.1954, 0.4044]], dtype=tf.float64)
         with tf.GradientTape(persistent=True) as tape:
@@ -215,7 +215,6 @@ class KKTExpectedImprovement(KKTAcquisitionFunctionBuilder[ProbabilisticModelTyp
         tf.debugging.assert_shapes([(mle_objective_grad, [..., 2])])
         normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
 
-        # TODO: Double check expected improvement definition
         expected_improvement = (self.best_valid_observation - objective_mean) * normal.cdf(self.best_valid_observation) + objective_var * normal.prob(self.best_valid_observation)
         num_x_vals = x.shape[0]
         cosine_similarities = []

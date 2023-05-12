@@ -434,7 +434,7 @@ class ALEfficientGlobalOptimization(
                 # optimize batch elements independently
                 optimizer = al_batchify_vectorize(optimizer, num_query_points)
             else:
-                # TODO: Raise error here? Currently we're only working with AL which is vectorizable
+                raise ValueError(f"ALEGO Requires Vectorized Acquisition Function")
                 pass
 
         self._builder: BatchThompsonSamplingAugmentedLagrangian \
