@@ -673,7 +673,7 @@ class KKTEfficientGlobalOptimization(
                 assert (points.shape[0] == 1)
                 expected_improvement = self._builder.get_expected_improvement(points)
                 print(f"Expected Improvement (Outer Loop): {expected_improvement}")
-                if expected_improvement > self._epsilon * self._builder.best_valid_observation:
+                if expected_improvement > self._epsilon * abs(self._builder.best_valid_observation):
                     sufficient_improvement = True
                 else:
                     # If EI is low, relax constraint binding z-value

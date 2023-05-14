@@ -21,15 +21,15 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_integer('num_experiments', 100, 'Number of repeats of experiment to run.')
-flags.DEFINE_integer('num_bo_iterations', 40, 'Number of iterations of Bayesian optimisation to run for.')
+flags.DEFINE_integer('num_experiments', 20, 'Number of repeats of experiment to run.')
+flags.DEFINE_integer('num_bo_iterations', 140, 'Number of iterations of Bayesian optimisation to run for.')
 flags.DEFINE_float('epsilon', 0.01, 'Bound within which equality constraints are considered to be satisfied.')
-flags.DEFINE_enum('problem', 'LSQ', ['LSQ', 'GSBP'], 'Test problem to use.')
+flags.DEFINE_enum('problem', 'GSBP', ['LSQ', 'GSBP'], 'Test problem to use.')
 flags.DEFINE_integer('num_rff_features', 1000, 'Number of Random Fourier Features to use when approximating the kernel.')
-flags.DEFINE_integer('num_initial_samples', 5, 'Number of random samples to fit models before starting BO.')
+flags.DEFINE_integer('num_initial_samples', 10, 'Number of random samples to fit models before starting BO.')
 flags.DEFINE_float('ei_epsilon', 0.001, 'Fractional improvement over current best valid observed point required to'
                                         'run simulation with newly suggested point returned by acquisition function.')
-flags.DEFINE_boolean('feasible_region_only', True, 'Whether to only consider region where all surrogate models for '
+flags.DEFINE_boolean('feasible_region_only', False, 'Whether to only consider region where all surrogate models for '
                                                    'constraints are satisfied when generating acquisition function.')
 flags.DEFINE_boolean('thompson_sampling', False, 'Whether to use Thompson Sampling to model constraints, so that more'
                                                  'distributional information can be utilised in gradient calculations.')
@@ -40,7 +40,7 @@ flags.DEFINE_integer('num_acquisition_optimiser_start_points', 5000, 'Number of 
                                                                      'acquisition function when optimising it.')
 flags.DEFINE_float('alpha_lower_bound', 0.01, 'Lower bound on alpha for considering whether constraints are binding.')
 flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
-flags.DEFINE_string('save_path', 'results/dfsdfsdsextra_kkt_results/lsq/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/extra_kkt_results/gsbp/data/run_', 'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, kernel_name, data):
