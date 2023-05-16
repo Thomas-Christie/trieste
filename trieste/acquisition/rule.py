@@ -671,9 +671,10 @@ class KKTEfficientGlobalOptimization(
                 # In the case of KKT EI optimisation should only return 1 point
                 points = self._optimizer(search_space, self._acquisition_function)
                 assert (points.shape[0] == 1)
+                acq_func_val = self._acquisition_function(points[None, ...])  # If 0 => no binding constraint was found
                 expected_improvement = self._builder.get_expected_improvement(points)
                 print(f"Expected Improvement (Outer Loop): {expected_improvement}")
-                if expected_improvement > self._epsilon * abs(self._builder.best_valid_observation):
+                if acq_func_val != 0 and expected_improvement > self._epsilon * abs(self._builder.best_valid_observation):
                     sufficient_improvement = True
                 else:
                     # If EI is low, relax constraint binding z-value
