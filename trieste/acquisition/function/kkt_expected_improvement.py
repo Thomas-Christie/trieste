@@ -906,7 +906,6 @@ class KKTThompsonSamplingExpectedImprovement(KKTAcquisitionFunctionBuilder[Proba
         tf.debugging.assert_shapes([(mle_objective_grad, [..., 2])])
         normal = tfp.distributions.Normal(objective_mean, tf.sqrt(objective_var))
 
-        # TODO: Double check expected improvement definition
         expected_improvement = (self.best_valid_observation - objective_mean) * normal.cdf(self.best_valid_observation) + objective_var * normal.prob(self.best_valid_observation)
         num_x_vals = x.shape[0]
         cosine_similarities = []

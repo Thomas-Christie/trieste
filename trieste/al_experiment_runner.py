@@ -23,7 +23,7 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_integer('num_experiments', 20, 'Number of repeats of experiment to run.')
+flags.DEFINE_integer('num_experiments', 30, 'Number of repeats of experiment to run.')
 flags.DEFINE_integer('num_bo_iterations', 74, 'Number of iterations of Bayesian optimisation to run for.')
 flags.DEFINE_float('epsilon', 0.01, 'Bound within which equality constraints are considered to be satisfied.')
 flags.DEFINE_enum('problem', 'LOCKWOOD', ['LSQ', 'GSBP', 'LOCKWOOD'], 'Test problem to use.')
@@ -38,7 +38,7 @@ flags.DEFINE_boolean('conservative_penalty_decrease', False, 'Whether to reduce 
 flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multipliers and penalty parameter in a '
                                                'manner which is fully consistent with the appendix of the original '
                                                'paper (which differs from the body of the original paper).')
-flags.DEFINE_enum('sampling_strategy', 'sobol', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
+flags.DEFINE_enum('sampling_strategy', 'uniform_random', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
                                                                              'initial points.')
 flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfgs-b', 'adam'],
                   'Which optimiser to use for optimising the acquisition function.')
@@ -47,7 +47,7 @@ flags.DEFINE_integer('num_acquisition_optimiser_start_points', 6000, 'Number of 
 flags.DEFINE_boolean('known_objective', True, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam_no_prev_rbf_batch_five/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam_no_prev_rbf_batch_five_uniform_random/data/run_',
                     'Prefix of path to save results to.')
 
 

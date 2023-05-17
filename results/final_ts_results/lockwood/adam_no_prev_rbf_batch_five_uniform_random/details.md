@@ -1,4 +1,4 @@
-Ran TS-AL with Adam optimiser on Lockwood problem using RBF kernel, with batch size of 5.
+Ran batched TS-AL on Lockwood with uniform random sampling for initialisation.
 
 ``` 
 Running Experiment with Flags: --acquisition_fn_optimiser=adam
@@ -14,8 +14,8 @@ Running Experiment with Flags: --acquisition_fn_optimiser=adam
 --num_initial_samples=30
 --num_rff_features=1000
 --problem=LOCKWOOD
---sampling_strategy=sobol
+--sampling_strategy=uniform_random
 --save_lagrange
---save_path=results/final_ts_results/lockwood/adam_no_prev_rbf_batch_five/data/run_
+--save_path=results/final_ts_results/lockwood/adam_no_prev_rbf_batch_five_uniform_random/data/run_
 --noupdate_lagrange_via_kkt
 ```
