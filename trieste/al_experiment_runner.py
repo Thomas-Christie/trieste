@@ -40,14 +40,14 @@ flags.DEFINE_boolean('fully_consistent', True, 'Whether to update Lagrange multi
                                                'paper (which differs from the body of the original paper).')
 flags.DEFINE_enum('sampling_strategy', 'uniform_random', ['sobol', 'uniform_random'], 'Random sampling strategy for selecting '
                                                                              'initial points.')
-flags.DEFINE_enum('acquisition_fn_optimiser', 'adam', ['random', 'sobol', 'l-bfgs-b', 'adam'],
+flags.DEFINE_enum('acquisition_fn_optimiser', 'random', ['random', 'sobol', 'l-bfgs-b', 'adam'],
                   'Which optimiser to use for optimising the acquisition function.')
 flags.DEFINE_integer('num_acquisition_optimiser_start_points', 6000, 'Number of starting points to randomly sample from'
                                                                      'acquisition function when optimising it.')
 flags.DEFINE_boolean('known_objective', True, 'Whether to use a known objective function or model it with a surrogate.')
 flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
 flags.DEFINE_boolean('save_lagrange', True, 'Save intermediate values of Lagrange multipliers.')
-flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/adam_no_prev_rbf_uniform_random/data/run_',
+flags.DEFINE_string('save_path', 'results/final_ts_results/lockwood/no_opt_rbf_uniform_random/data/run_',
                     'Prefix of path to save results to.')
 
 
