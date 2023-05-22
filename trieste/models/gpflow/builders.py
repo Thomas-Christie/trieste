@@ -145,6 +145,35 @@ def build_gpr(
     return model
 
 
+# For modelling known linear objective in Lockwood problem for ECI
+def build_eci_lockwood_known_objective_gpr(
+    data: Dataset,
+    search_space: Optional[SearchSpace] = None,
+    likelihood_variance: Optional[float] = None,
+    trainable_likelihood: bool = False,
+) -> GPR:
+    empirical_mean, empirical_variance, _ = _get_data_stats(data)
+
+    lengthscales = _get_lengthscales(search_space)
+    linear_coefficients = tf.ones((6, 1), dtype=tf.float64)
+    mean = gpflow.mean_functions.Linear(A=linear_coefficients)
+    kernel = gpflow.kernels.SquaredExponential(variance=1e-6, lengthscales=lengthscales)
+
+    kernel.lengthscales.prior = tfp.distributions.LogNormal(
+        tf.math.log(lengthscales), KERNEL_PRIOR_SCALE
+    )
+
+    assert isinstance(kernel, gpflow.kernels.Kernel)
+    model = gpflow.models.GPR(data.astuple(), kernel, mean)
+
+    _set_gaussian_likelihood_variance(model, empirical_variance, likelihood_variance)
+    gpflow.set_trainable(model.likelihood, trainable_likelihood)
+    gpflow.set_trainable(model.kernel, False)
+    gpflow.set_trainable(model.mean_function, False)
+
+    return model
+
+
 def build_sgpr(
     data: Dataset,
     search_space: SearchSpace,

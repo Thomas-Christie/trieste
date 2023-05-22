@@ -507,7 +507,7 @@ def generate_al_continuous_optimizer(
 
     return al_optimize_continuous
 
-# NOTE - Below is made for running final KKT experiments. If L-BFGS-B fails, we just return the best point prior to
+# NOTE - Below is made for running final KKT (and ECI) experiments. If L-BFGS-B fails, we just return the best point prior to
 # running L-BFGS-B
 def generate_kkt_continuous_optimizer(
     num_initial_samples: int = NUM_SAMPLES_MIN,

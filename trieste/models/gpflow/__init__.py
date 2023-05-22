@@ -20,6 +20,7 @@ number of :class:`TrainableProbabilisticModel` wrappers for GPflow-based models.
 from . import optimizer
 from .builders import (
     build_gpr,
+    build_eci_lockwood_known_objective_gpr,
     build_multifidelity_autoregressive_models,
     build_multifidelity_nonlinear_autoregressive_models,
     build_sgpr,
