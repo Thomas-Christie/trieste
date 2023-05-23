@@ -27,7 +27,7 @@ flags.DEFINE_enum('sampling_strategy', 'uniform_random', ['sobol', 'uniform_rand
 flags.DEFINE_integer('num_acquisition_optimiser_start_points', 6000, 'Number of starting points to randomly sample from'
                                                                      'acquisition function when optimising it.')
 flags.DEFINE_enum('kernel_name', 'squared_exponential', ['matern52', 'squared_exponential'], 'Which kernel to use.')
-flags.DEFINE_string('save_path', 'results/eci_results/lockwood/data/run_', 'Prefix of path to save results to.')
+flags.DEFINE_string('save_path', 'results/eci_results/lockwood_known_objective/data/run_', 'Prefix of path to save results to.')
 
 
 def create_model(search_space, num_rff_features, kernel_name, data):
