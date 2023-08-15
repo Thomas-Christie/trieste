@@ -653,6 +653,117 @@ def batchify_vectorize(
     return optimizer
 
 
+def generate_adam_optimizer(
+    num_initial_samples: int = NUM_SAMPLES_MIN,
+) -> AcquisitionOptimizer[Box | TaggedProductSearchSpace]:
+    """
+    NOTE: This is a modification of the plain 'generate_continuous_optimizer' function to generate an
+    optimizer for the Augmented Lagrangian acquisition function which takes the most recently queried point as
+    an argument. This uses Tensorflow's Adam optimiser.
+
+    Generate a gradient-based optimizer for :class:'Box' and :class:'TaggedProductSearchSpace'
+    spaces and batches of size 1. In the case of a :class:'TaggedProductSearchSpace', We perform
+    gradient-based optimization across all :class:'Box' subspaces, starting from the best location
+    found across a sample of `num_initial_samples` random points.
+
+    We advise the user to either use the default `NUM_SAMPLES_MIN` for `num_initial_samples`, or
+    `NUM_SAMPLES_DIM` times the dimensionality of the search space, whichever is greater.
+    Similarly, for `num_optimization_runs`, we recommend using `NUM_RUNS_DIM` times the
+    dimensionality of the search space.
+
+    This optimizer uses Tensorflow's Adam optimizer.
+
+    :param num_initial_samples: The size of the random sample used to find the starting point(s) of
+        the optimization.
+    :return: The acquisition optimizer.
+    """
+
+    def al_adam_optimize_continuous(
+        space: Box | TaggedProductSearchSpace,
+        target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+    ) -> TensorType:
+        """
+        A gradient-based :const:`AcquisitionOptimizer` for :class:'Box'
+        and :class:`TaggedProductSearchSpace' spaces.
+
+        For :class:'TaggedProductSearchSpace' we only apply gradient updates to
+        its class:'Box' subspaces.
+
+        :param space: The space over which to search.
+        :param target_func: The function to maximise, with input shape [..., V, D] and output shape
+                [..., V].
+        :param most_recent_query_point: Most recently queried point. Ignored.
+        :return: The V points in ``space`` that maximises``target_func``, with shape [V, D].
+        """
+
+        if isinstance(target_func, tuple):  # check if we need a vectorized optimizer
+            target_func, V = target_func
+        else:
+            V = 1
+
+        candidates = space.sample(num_initial_samples)[:, None, :]  # [num_initial_samples, 1, D]
+        tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
+
+        target_func_values = target_func(tiled_candidates)  # [num_samples, V]
+        tf.debugging.assert_shapes(
+            [(target_func_values, ("_", V))],
+            message=(
+                f"""
+                The result of function target_func has shape
+                {tf.shape(target_func_values)}, however, expected a trailing
+                dimension of size {V}.
+                """
+            ),
+        )
+
+        _, top_k_indices = tf.math.top_k(
+            tf.transpose(target_func_values), k=1
+        )  # [1, num_optimization_runs] or [V, num_optimization_runs]
+
+        tiled_candidates = tf.transpose(tiled_candidates, [1, 0, 2])  # [V, num_initial_samples, D]
+        top_k_points = tf.gather(
+            tiled_candidates, top_k_indices, batch_dims=1
+        )  # [V, 1, D]
+        initial_points = tf.transpose(top_k_points, [1, 0, 2])  # [1, V, D]
+
+        lower_lim = tf.Variable(space.lower[0], trainable=False, dtype=tf.float64)
+        upper_lim = tf.Variable(space.upper[0], trainable=False, dtype=tf.float64)
+
+        # Transform initial point for optimisation
+        optimised_points = tf.math.log((initial_points - lower_lim)/(upper_lim - initial_points))  # [1, V, D]
+        optimised_points = tf.Variable(optimised_points, name='optimised_points', trainable=True, dtype=tf.float64)
+
+        def loss_fn():
+            # Transform variable we're optimising over to enforce bounds
+            y = lower_lim + ((upper_lim - lower_lim) / (1 + tf.math.exp(-optimised_points)))
+            return - target_func(y)  # We're trying to *maximise* 'target_func', but Adam *minimises* it
+
+        opt = tf.keras.optimizers.Adam(learning_rate=0.001)
+        for i in range(200):
+            opt.minimize(loss_fn, var_list=[optimised_points])
+
+        # Transform optimised point back into original function space (which will be within the bounds enforced)
+        optimised_points = lower_lim + ((upper_lim - lower_lim) / (1 + tf.math.exp(-optimised_points)))
+
+        # We're trying to *maximise* 'target_func', so if our optimised point is actually worse than the initial point(
+        # which could be the case on rare occasions due to the Adam optimiser), we return the initial point.
+        optimised_vals = target_func(optimised_points)
+        initial_vals = target_func(initial_points)
+        dimensionality = optimised_points.shape[2]
+        optimised_val_mask = tf.transpose(tf.cast(optimised_vals > initial_vals, tf.float64))  # [V, 1]
+        optimised_val_mask = tf.repeat(optimised_val_mask, [dimensionality], axis=1)[None, ...]  # [1, V, D]
+        assert(optimised_val_mask.shape == optimised_points.shape)
+        assert(optimised_val_mask.shape == initial_points.shape)
+        points_to_return = optimised_points * optimised_val_mask + (1 - optimised_val_mask) * initial_points
+        print(f"Initial Vals: {initial_vals}")
+        print(f"Final Vals: {optimised_vals}")
+        print(f"Initial Points: {initial_points}")
+        print(f"Points to Return: {points_to_return}")
+        return points_to_return[0]
+
+    return al_adam_optimize_continuous
+
+
 def generate_random_search_optimizer(
     num_samples: int = NUM_SAMPLES_MIN,
 ) -> AcquisitionOptimizer[SearchSpace]:

@@ -65,4 +65,5 @@ from .multi_objective import (
     batch_ehvi,
     expected_hv_improvement,
 )
+from .thompson_sampling_augmented_lagrangian import ThompsonSamplingAugmentedLagrangian
 from .utils import MultivariateNormalCDF
