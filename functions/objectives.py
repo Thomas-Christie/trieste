@@ -1,3 +1,4 @@
+import math
 import tensorflow as tf
 
 
@@ -41,3 +42,29 @@ def lockwood_objective_trajectory(x: tf.Tensor) -> tf.Tensor:
     :return: objective values at location "x" with shape [N, B, 1]
     """
     return tf.reduce_sum(x, axis=2, keepdims=True)
+
+def ackley_10(x: tf.Tensor) -> tf.Tensor:
+    """
+    The Ackley test function over :math:`[0, 1]^10`. This function has
+    many local minima and a global minima. See https://www.sfu.ca/~ssurjano/ackley.html
+    for details. This is based on the problem presented in
+    https://arxiv.org/pdf/2002.08526.pdf, which evaluates the function over the domain
+    [-5, 10].
+
+    :param x: The points at which to evaluate the function, with shape [N, 10].
+    :return: The function values at ``x``, with shape [N, 1].
+    :raise ValueError (or InvalidArgumentError): If ``x`` has an invalid shape.
+    """
+    x = -5.0 + 15.0 * x 
+
+    exponent_1 = -0.2 * tf.math.sqrt((1 / 10.0) * tf.reduce_sum(x**2, -1))
+    exponent_2 = (1 / 10.0) * tf.reduce_sum(tf.math.cos(2.0 * math.pi * x), -1)
+
+    objective = tf.expand_dims((
+        -20.0 * tf.math.exp(exponent_1)
+        - tf.math.exp(exponent_2)
+        + 20.0
+        + tf.cast(tf.math.exp(1.0), dtype=x.dtype)
+    ), -1)
+    tf.debugging.assert_rank(objective, 2)
+    return objective

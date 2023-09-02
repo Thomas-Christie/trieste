@@ -84,3 +84,25 @@ def dual_ascent_test_constraint(x: tf.Tensor) -> tf.Tensor:
     constraint = tf.cast(2 * x0 - x1 - 5, tf.float64)
     tf.debugging.assert_rank(constraint, 2)
     return constraint
+
+def ackley_10_constraint_one(x: tf.Tensor) -> tf.Tensor:
+    """
+    Taken from https://arxiv.org/pdf/2002.08526.pdf. Evaluated over [0,1]^10
+    :param x: locations to evaluate constraint at of shape [N, 10]
+    :return: constraint values at locations "x" with shape [N, 1]
+    """
+    x = -5.0 + 15.0 * x
+    constraint = tf.reduce_sum(x, axis=-1, keepdims=True)
+    tf.debugging.assert_rank(constraint, 2)
+    return constraint
+
+def ackley_10_constraint_two(x: tf.Tensor) -> tf.Tensor:
+    """
+    Taken from https://arxiv.org/pdf/2002.08526.pdf. Evaluated over [0,1]^10
+    :param x: locations to evaluate constraint at of shape [N, 10]
+    :return: constraint values at locations "x" with shape [N, 1]
+    """
+    x = -5.0 + 15.0 * x
+    constraint = tf.norm(x, ord=2, axis=-1, keepdims=True) - 5
+    tf.debugging.assert_rank(constraint, 2)
+    return constraint
