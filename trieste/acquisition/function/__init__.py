@@ -66,4 +66,5 @@ from .multi_objective import (
     expected_hv_improvement,
 )
 from .thompson_sampling_augmented_lagrangian import ThompsonSamplingAugmentedLagrangian
+from .scbo import SCBO
 from .utils import MultivariateNormalCDF

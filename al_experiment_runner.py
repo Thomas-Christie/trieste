@@ -5,6 +5,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import gpflow.mean_functions
 from absl import app, flags
 import tensorflow as tf
+import math
 import numpy as np
 import trieste
 from trieste.acquisition.optimizer import (
@@ -15,7 +16,11 @@ from trieste.acquisition.optimizer import (
 from trieste.acquisition.function.thompson_sampling_augmented_lagrangian import (
     ThompsonSamplingAugmentedLagrangian,
 )
-from trieste.acquisition.rule import EfficientGlobalOptimization
+from trieste.acquisition.rule import (
+    EfficientGlobalOptimization,
+    ConstrainedTURBO,
+    ConstrainedTURBOEfficientGlobalOptimization,
+)
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 
 from trieste.space import Box
@@ -36,7 +41,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    190,
+    370,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_float(
@@ -46,7 +51,7 @@ flags.DEFINE_float(
 )
 flags.DEFINE_enum(
     "problem",
-    "ACKLEY10",
+    "LOCKWOOD",
     ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10"],
     "Test problem to use.",
 )
@@ -56,28 +61,28 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 1, "Number of points to sample at each iteration of BO."
+    "batch_size", 2, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    10,
+    5,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
     "sampling_strategy",
-    "sobol",
-    ["sobol", "uniform_random"],
+    "halton",
+    ["halton", "sobol", "uniform_random"],
     "Random sampling strategy for selecting " "initial points.",
 )
 flags.DEFINE_enum(
     "acquisition_fn_optimiser",
-    "l-bfgs-b",
+    "adam",
     ["random", "sobol", "l-bfgs-b", "adam"],
     "Which optimiser to use for optimising the acquisition function.",
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    5000,
+    6000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
@@ -88,23 +93,30 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_enum(
     "kernel_name",
-    "matern52",
+    "squared_exponential",
     ["matern52", "squared_exponential"],
     "Which kernel to use.",
+)
+flags.DEFINE_boolean(
+    "trust_region", True, "Use a trust region for optimising the acquisition function."
 )
 flags.DEFINE_boolean(
     "save_lagrange", False, "Save intermediate values of Lagrange multipliers."
 )
 flags.DEFINE_string(
     "save_path",
-    "results/final_ts_results/lockwood/dsdano_opt_rbf_uniform_random/data/run_",
+    "final_ts_al_results/lockwooyjkkhd/vanilla_adam/data/run_",
     "Prefix of path to save results to.",
 )
 
 
 def create_model(search_space, num_rff_features, kernel_name, data):
     gpr = build_gpr(
-        data, search_space, likelihood_variance=1e-6, kernel_name=kernel_name
+        data,
+        search_space,
+        likelihood_variance=1e-6,
+        mean=gpflow.mean_functions.Zero(),
+        kernel_name=kernel_name,
     )
     return GaussianProcessRegression(
         gpr, num_rff_features=num_rff_features, use_decoupled_sampler=True
@@ -123,7 +135,7 @@ def main(argv):
         set_seed(run + 42)
         if FLAGS.problem == "LOCKWOOD":
             search_space = Box(
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
             )
         elif FLAGS.problem == "ACKLEY10":
             search_space = Box(
@@ -156,6 +168,10 @@ def main(argv):
 
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
+                FLAGS.num_initial_samples, seed=run + 42
+            )
+        elif FLAGS.sampling_strategy == "halton":
+            initial_inputs = search_space.sample_halton(
                 FLAGS.num_initial_samples, seed=run + 42
             )
         elif FLAGS.sampling_strategy == "sobol":
@@ -260,17 +276,50 @@ def main(argv):
                 num_initial_samples=FLAGS.num_acquisition_optimiser_start_points
             )
 
-        rule = EfficientGlobalOptimization(
-            augmented_lagrangian, optimizer=optimizer, num_query_points=FLAGS.batch_size
-        )
-        bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
-        data = bo.optimize(
-            FLAGS.num_bo_iterations,
-            initial_data,
-            initial_models,
-            rule,
-            track_state=False,
-        ).try_get_final_datasets()
+        if FLAGS.trust_region:
+            dimensionality = search_space.dimension
+            perturbation_prob = min(1.0, 20.0/(tf.cast(dimensionality, tf.float64)*10))
+            constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
+                augmented_lagrangian,
+                optimizer=optimizer,
+                batch_size=FLAGS.batch_size,
+            )
+            rule = ConstrainedTURBO(
+                search_space=search_space,
+                perturbation_prob=perturbation_prob,
+                num_trust_regions=1,
+                rule=constrained_turbo_ego,
+                equality_constraint_tolerance=FLAGS.epsilon,
+                L_min=tf.constant(2.0**-7, dtype=tf.float64),
+                L_max=tf.constant(1.6, dtype=tf.float64),
+                L_init=tf.constant(0.8, dtype=tf.float64),
+                success_tolerance=max(3, math.ceil(dimensionality / 10)),
+                failure_tolerance=math.ceil(dimensionality / FLAGS.batch_size),
+                local_models=initial_models,
+            )
+            bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
+            data = bo.optimize(
+                FLAGS.num_bo_iterations,
+                initial_data,
+                initial_models,
+                rule,
+                fit_model=False,
+                track_state=False,
+            ).try_get_final_datasets()
+        else:
+            ego = EfficientGlobalOptimization(
+                augmented_lagrangian,
+                optimizer=optimizer,
+                num_query_points=FLAGS.batch_size,
+            )
+            bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
+            data = bo.optimize(
+                FLAGS.num_bo_iterations,
+                initial_data,
+                initial_models,
+                ego,
+                track_state=False,
+            ).try_get_final_datasets()
         with open(FLAGS.save_path + f"{run}_data.pkl", "wb") as fp:
             pickle.dump(data, fp)
 

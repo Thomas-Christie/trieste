@@ -16,7 +16,7 @@ def lockwood_constraint_observer(query_points: TensorType) -> Mapping[Tag, Datas
     # Lockwood executable needs to be run from its own directory
     os.chdir("/Users/thomaschristie/Documents/GitHub.nosync/trieste/functions/lockwood/runlock/")
     observations = [[], [], []]
-    scaled_query_points = query_points * 10000
+    scaled_query_points = query_points * 20000
     for scaled_query_point in scaled_query_points:
         # Write query point to 'input.tst' file
         with open('python_input.tst', 'w') as fp:

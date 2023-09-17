@@ -46,13 +46,19 @@ from ..models.interfaces import (
     ProbabilisticModelType,
     TrainableSupportsGetKernel,
 )
-from ..observer import OBJECTIVE
+from ..observer import (
+    OBJECTIVE,
+    INEQUALITY_CONSTRAINT_PREFIX,
+    EQUALITY_CONSTRAINT_PREFIX,
+)
 from ..space import Box, SearchSpace
 from ..types import State, Tag, TensorType
 from .function import (
     BatchMonteCarloExpectedImprovement,
     ExpectedImprovement,
     ProbabilityOfImprovement,
+    SCBO,
+    ThompsonSamplingAugmentedLagrangian,
 )
 from .interface import (
     AcquisitionFunction,
@@ -66,9 +72,11 @@ from .interface import (
 from .multi_objective import Pareto
 from .optimizer import (
     AcquisitionOptimizer,
+    ConstrainedTrustRegionAcquisitionOptimizer,
     automatic_optimizer_selector,
     batchify_joint,
     batchify_vectorize,
+    constrained_turbo_batchify_vectorize,
 )
 from .sampler import ExactThompsonSampler, ThompsonSampler
 from .utils import get_local_dataset, select_nth_output
@@ -80,7 +88,9 @@ SearchSpaceType = TypeVar("SearchSpaceType", bound=SearchSpace, contravariant=Tr
 """ Contravariant type variable bound to :class:`~trieste.space.SearchSpace`. """
 
 
-class AcquisitionRule(ABC, Generic[ResultType, SearchSpaceType, ProbabilisticModelType]):
+class AcquisitionRule(
+    ABC, Generic[ResultType, SearchSpaceType, ProbabilisticModelType]
+):
     """
     The central component of the acquisition API.
 
@@ -249,7 +259,9 @@ class EfficientGlobalOptimization(
         ] = builder
         self._optimizer = optimizer
         self._num_query_points = num_query_points
-        self._acquisition_function: Optional[AcquisitionFunction] = initial_acquisition_function
+        self._acquisition_function: Optional[
+            AcquisitionFunction
+        ] = initial_acquisition_function
 
     def __repr__(self) -> str:
         """"""
@@ -304,11 +316,13 @@ class EfficientGlobalOptimization(
                 values = self._acquisition_function(batched_points)[0]
                 if len(values) == 1:
                     logging.scalar(
-                        "EGO.acquisition_function/maximum_found" + "[0]" * greedy, values[0]
+                        "EGO.acquisition_function/maximum_found" + "[0]" * greedy,
+                        values[0],
                     )
                 else:  # vectorized acquisition function
                     logging.histogram(
-                        "EGO.acquisition_function/maximums_found" + "[0]" * greedy, values
+                        "EGO.acquisition_function/maximums_found" + "[0]" * greedy,
+                        values,
                     )
 
         if isinstance(self._builder, GreedyAcquisitionFunctionBuilder):
@@ -323,7 +337,9 @@ class EfficientGlobalOptimization(
                     new_optimization_step=False,
                 )
                 with tf.name_scope(f"EGO.optimizer[{i+1}]"):
-                    chosen_point = self._optimizer(search_space, self._acquisition_function)
+                    chosen_point = self._optimizer(
+                        search_space, self._acquisition_function
+                    )
                 points = tf.concat([points, chosen_point], axis=0)
 
                 if summary_writer:
@@ -332,12 +348,111 @@ class EfficientGlobalOptimization(
                         values = self._acquisition_function(batched_points)[0]
                         if len(values) == 1:
                             logging.scalar(
-                                f"EGO.acquisition_function/maximum_found[{i + 1}]", values[0]
+                                f"EGO.acquisition_function/maximum_found[{i + 1}]",
+                                values[0],
                             )
                         else:  # vectorized acquisition function
                             logging.histogram(
-                                f"EGO.acquisition_function/maximums_found[{i+1}]", values
+                                f"EGO.acquisition_function/maximums_found[{i+1}]",
+                                values,
                             )
+
+        return points
+
+
+class ConstrainedTURBOEfficientGlobalOptimization:
+    """Based on above, implements the Efficient Global Optimization, or EGO, algorithm,
+    whilst enabling additional parameters to be passed to the optimizer for constrained
+    problems which use a trust region, which also need to be passed the best point found
+    so far as well as the perturbation probability for deciding the location of the
+    point to query next."""
+
+    def __init__(
+        self,
+        builder: ThompsonSamplingAugmentedLagrangian | SCBO,
+        optimizer: ConstrainedTrustRegionAcquisitionOptimizer[SearchSpaceType],
+        batch_size: int = 1,
+    ):
+        """
+        :param builder: The acquisition function builder to use. Defaults to
+            :class:`~trieste.acquisition.ExpectedImprovement`.
+        :param optimizer: The optimizer with which to optimize the acquisition function built by
+            ``builder``. This should *maximize* the acquisition function, and must be compatible
+            with the global search space. Defaults to
+            :func:`~trieste.acquisition.optimizer.automatic_optimizer_selector`.
+        :param batch_size: The number of points to acquire.
+        """
+
+        if batch_size <= 0:
+            raise ValueError(f"Batch size must be greater than 0, got {batch_size}")
+
+        if not isinstance(
+            builder,
+            (ThompsonSamplingAugmentedLagrangian, SCBO),
+        ):
+            raise ValueError(
+                "ConstrainedTURBOEfficientGlobalOptimization only implemented for ThompsonSamplingAugmentedLagrangian and SCBO acquisition functions."
+            )
+
+        if batch_size > 1:  # need to build batches of points
+            if isinstance(builder, VectorizedAcquisitionFunctionBuilder):
+                # optimize batch elements independently
+                optimizer = constrained_turbo_batchify_vectorize(optimizer, batch_size)
+            else:
+                raise NotImplementedError(
+                    "ConstrainedTurboEfficientGlobalOptimization only implemented for vectorized acquisition functions."
+                )
+
+        self._builder: ThompsonSamplingAugmentedLagrangian | SCBO = builder
+        self._optimizer = optimizer
+        self._num_query_points = batch_size
+        self._acquisition_function = None
+
+    def __repr__(self) -> str:
+        """"""
+        return f"""ConstrainedTURBOEfficientGlobalOptimization(
+        {self._builder!r},
+        {self._optimizer!r},
+        {self._num_query_points!r})"""
+
+    @property
+    def acquisition_function(self) -> Optional[AcquisitionFunction]:
+        """The current acquisition function, updated last time :meth:`acquire` was called."""
+        return self._acquisition_function
+
+    def acquire(
+        self,
+        search_space: SearchSpaceType,
+        x_min: TensorType,
+        perturbation_prob: float,
+        models: Mapping[Tag, ProbabilisticModelType],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> TensorType:
+        """
+        Return the query point(s) that optimizes the acquisition function produced by ``builder``
+        (see :meth:`__init__`).
+
+        :param search_space: The local acquisition search space for *this step*.
+        :param models: The model for each tag.
+        :param datasets: The known observer query points and observations. Whether this is required
+            depends on the acquisition function used.
+        :return: The single (or batch of) points to query.
+        """
+        if self._acquisition_function is None:
+            self._acquisition_function = self._builder.prepare_acquisition_function(
+                models,
+                datasets=datasets,
+            )
+        else:
+            self._acquisition_function = self._builder.update_acquisition_function(
+                self._acquisition_function,
+                models,
+                datasets=datasets,
+            )
+
+        points = self._optimizer(
+            search_space, self._acquisition_function, x_min, perturbation_prob
+        )
 
         return points
 
@@ -376,23 +491,32 @@ class AsynchronousRuleState:
         """
 
         @tf.function
-        def _remove_point(pending_points: TensorType, point_to_remove: TensorType) -> TensorType:
+        def _remove_point(
+            pending_points: TensorType, point_to_remove: TensorType
+        ) -> TensorType:
             # find all points equal to the one we need to remove
-            are_points_equal = tf.reduce_all(tf.equal(pending_points, point_to_remove), axis=1)
+            are_points_equal = tf.reduce_all(
+                tf.equal(pending_points, point_to_remove), axis=1
+            )
             if not tf.reduce_any(are_points_equal):
                 # point to remove isn't there, nothing to do
                 return pending_points
 
             # since we're compiling, we still need to handle pending_points = [] here
-            top = tf.cond(tf.math.greater(1, tf.shape(are_points_equal)[0]), lambda: 0, lambda: 1)
+            top = tf.cond(
+                tf.math.greater(1, tf.shape(are_points_equal)[0]), lambda: 0, lambda: 1
+            )
 
             # this line converts all bool values to 0 and 1
             # then finds first 1 and returns its index as 1x1 tensor
-            _, first_index_tensor = tf.math.top_k(tf.cast(are_points_equal, tf.int8), k=top)
+            _, first_index_tensor = tf.math.top_k(
+                tf.cast(are_points_equal, tf.int8), k=top
+            )
             # to use it as index for slicing, we need to convert 1x1 tensor to a TF scalar
             first_index = tf.reshape(first_index_tensor, [])
             return tf.concat(
-                [pending_points[:first_index, :], pending_points[first_index + 1 :, :]], axis=0
+                [pending_points[:first_index, :], pending_points[first_index + 1 :, :]],
+                axis=0,
             )
 
         if not self.has_pending_points:
@@ -581,7 +705,9 @@ class AsynchronousOptimization(
         def state_func(
             state: AsynchronousRuleState | None,
         ) -> tuple[AsynchronousRuleState | None, TensorType]:
-            tf.debugging.Assert(self._acquisition_function is not None, [tf.constant([])])
+            tf.debugging.Assert(
+                self._acquisition_function is not None, [tf.constant([])]
+            )
 
             if state is None:
                 state = AsynchronousRuleState(None)
@@ -605,13 +731,21 @@ class AsynchronousOptimization(
 
                     # pending points are 2D, we need 3D and repeat along first axis
                     expanded = tf.expand_dims(pending_points, axis=0)
-                    pending_points_repeated = tf.repeat(expanded, [tf.shape(x)[0]], axis=0)
+                    pending_points_repeated = tf.repeat(
+                        expanded, [tf.shape(x)[0]], axis=0
+                    )
                     all_points = tf.concat([pending_points_repeated, x], axis=1)
-                    return cast(AcquisitionFunction, self._acquisition_function)(all_points)
+                    return cast(AcquisitionFunction, self._acquisition_function)(
+                        all_points
+                    )
 
-                acquisition_function = cast(AcquisitionFunction, function_with_pending_points)
+                acquisition_function = cast(
+                    AcquisitionFunction, function_with_pending_points
+                )
             else:
-                acquisition_function = cast(AcquisitionFunction, self._acquisition_function)
+                acquisition_function = cast(
+                    AcquisitionFunction, self._acquisition_function
+                )
 
             with tf.name_scope("AsynchronousOptimization.optimizer"):
                 new_points = self._optimizer(search_space, acquisition_function)
@@ -663,7 +797,8 @@ class AsynchronousGreedy(
             raise ValueError("Please specify an acquisition builder")
 
         if not isinstance(
-            builder, (GreedyAcquisitionFunctionBuilder, SingleModelGreedyAcquisitionBuilder)
+            builder,
+            (GreedyAcquisitionFunctionBuilder, SingleModelGreedyAcquisitionBuilder),
         ):
             raise NotImplementedError(
                 f"""Only greedy acquisition strategies are supported,
@@ -676,7 +811,9 @@ class AsynchronousGreedy(
         if isinstance(builder, SingleModelGreedyAcquisitionBuilder):
             builder = builder.using(OBJECTIVE)
 
-        self._builder: GreedyAcquisitionFunctionBuilder[ProbabilisticModelType] = builder
+        self._builder: GreedyAcquisitionFunctionBuilder[
+            ProbabilisticModelType
+        ] = builder
         self._optimizer = optimizer
         self._acquisition_function: Optional[AcquisitionFunction] = None
         self._num_query_points = num_query_points
@@ -744,7 +881,9 @@ class AsynchronousGreedy(
                 )
 
             with tf.name_scope("AsynchronousOptimization.optimizer[0]"):
-                new_points_batch = self._optimizer(search_space, self._acquisition_function)
+                new_points_batch = self._optimizer(
+                    search_space, self._acquisition_function
+                )
             state = state.add_pending_points(new_points_batch)
 
             summary_writer = logging.get_tensorboard_writer()
@@ -760,13 +899,16 @@ class AsynchronousGreedy(
                     new_optimization_step=False,
                 )
                 with tf.name_scope(f"AsynchronousOptimization.optimizer[{i+1}]"):
-                    new_point = self._optimizer(search_space, self._acquisition_function)
+                    new_point = self._optimizer(
+                        search_space, self._acquisition_function
+                    )
                 if summary_writer:
                     with summary_writer.as_default(step=step_number):
                         batched_point = tf.expand_dims(new_point, axis=0)
                         value = self._acquisition_function(batched_point)[0][0]
                         logging.scalar(
-                            f"AsyncGreedy.acquisition_function/maximum_found[{i}]", value
+                            f"AsyncGreedy.acquisition_function/maximum_found[{i}]",
+                            value,
                         )
                 state = state.add_pending_points(new_point)
                 new_points_batch = tf.concat([new_points_batch, new_point], axis=0)
@@ -819,7 +961,9 @@ class RandomSampling(AcquisitionRule[TensorType, SearchSpace, ProbabilisticModel
         return samples
 
 
-class DiscreteThompsonSampling(AcquisitionRule[TensorType, SearchSpace, ProbabilisticModelType]):
+class DiscreteThompsonSampling(
+    AcquisitionRule[TensorType, SearchSpace, ProbabilisticModelType]
+):
     r"""
     Implements Thompson sampling for choosing optimal points.
 
@@ -869,7 +1013,9 @@ class DiscreteThompsonSampling(AcquisitionRule[TensorType, SearchSpace, Probabil
             :func:~`trieste.acquisition.utils.select_nth_output` function with output dimension 0.
         """
         if not num_search_space_samples > 0:
-            raise ValueError(f"Search space must be greater than 0, got {num_search_space_samples}")
+            raise ValueError(
+                f"Search space must be greater than 0, got {num_search_space_samples}"
+            )
 
         if not num_query_points > 0:
             raise ValueError(
@@ -941,7 +1087,9 @@ class DiscreteThompsonSampling(AcquisitionRule[TensorType, SearchSpace, Probabil
 
 class TrustRegion(
     AcquisitionRule[
-        types.State[Optional["TrustRegion.State"], TensorType], Box, ProbabilisticModelType
+        types.State[Optional["TrustRegion.State"], TensorType],
+        Box,
+        ProbabilisticModelType,
     ]
 ):
     """Implements the *trust region* acquisition algorithm."""
@@ -1055,7 +1203,9 @@ class TrustRegion(
         :raise KeyError: If ``datasets`` does not contain the key `OBJECTIVE`.
         """
         if datasets is None or OBJECTIVE not in datasets.keys():
-            raise ValueError(f"""datasets must be provided and contain the key {OBJECTIVE}""")
+            raise ValueError(
+                f"""datasets must be provided and contain the key {OBJECTIVE}"""
+            )
 
         dataset = datasets[OBJECTIVE]
 
@@ -1068,7 +1218,11 @@ class TrustRegion(
             state: TrustRegion.State | None,
         ) -> tuple[TrustRegion.State | None, TensorType]:
             if state is None:
-                eps = 0.5 * (global_upper - global_lower) / (5.0 ** (1.0 / global_lower.shape[-1]))
+                eps = (
+                    0.5
+                    * (global_upper - global_lower)
+                    / (5.0 ** (1.0 / global_lower.shape[-1]))
+                )
                 is_global = True
             else:
                 tr_volume = tf.reduce_prod(
@@ -1105,7 +1259,9 @@ class TrustRegion(
 
 class TURBO(
     AcquisitionRule[
-        types.State[Optional["TURBO.State"], TensorType], Box, TrainableSupportsGetKernel
+        types.State[Optional["TURBO.State"], TensorType],
+        Box,
+        TrainableSupportsGetKernel,
     ]
 ):
     """Implements the TURBO algorithm as detailed in :cite:`eriksson2019scalable`."""
@@ -1139,7 +1295,9 @@ class TURBO(
         self,
         search_space: SearchSpace,
         num_trust_regions: int = 1,
-        rule: Optional[AcquisitionRule[ResultType, Box, TrainableSupportsGetKernel]] = None,
+        rule: Optional[
+            AcquisitionRule[ResultType, Box, TrainableSupportsGetKernel]
+        ] = None,
         L_min: Optional[float] = None,
         L_init: Optional[float] = None,
         L_max: Optional[float] = None,
@@ -1164,7 +1322,9 @@ class TURBO(
         """
 
         if not num_trust_regions > 0:
-            raise ValueError(f"Num trust regions must be greater than 0, got {num_trust_regions}")
+            raise ValueError(
+                f"Num trust regions must be greater than 0, got {num_trust_regions}"
+            )
 
         if num_trust_regions > 1:
             raise NotImplementedError(
@@ -1173,7 +1333,9 @@ class TURBO(
 
         # implement heuristic defaults for TURBO if not specified by user
         if rule is None:  # default to Thompson sampling with batches of size 1
-            rule = DiscreteThompsonSampling(tf.minimum(100 * search_space.dimension, 5_000), 1)
+            rule = DiscreteThompsonSampling(
+                tf.minimum(100 * search_space.dimension, 5_000), 1
+            )
 
         if failure_tolerance is None:
             if isinstance(
@@ -1185,7 +1347,9 @@ class TURBO(
                     AsynchronousOptimization,
                 ),
             ):
-                failure_tolerance = math.ceil(search_space.dimension / rule._num_query_points)
+                failure_tolerance = math.ceil(
+                    search_space.dimension / rule._num_query_points
+                )
             else:
                 failure_tolerance == search_space.dimension
             assert isinstance(failure_tolerance, int)
@@ -1261,7 +1425,9 @@ class TURBO(
         :raise KeyError: If ``datasets`` does not contain the key `OBJECTIVE`.
         """
         if self._local_models is None:  # if user doesnt specifiy a local model
-            self._local_models = copy.copy(models)  # copy global model (will be fit locally later)
+            self._local_models = copy.copy(
+                models
+            )  # copy global model (will be fit locally later)
 
         if self._local_models.keys() != {OBJECTIVE}:
             raise ValueError(
@@ -1286,7 +1452,9 @@ class TURBO(
             if state is None:  # initialise first TR
                 L, failure_counter, success_counter = self._L_init, 0, 0
             else:  # update TR
-                step_is_success = y_min < state.y_min - 1e-10  # maybe make this stronger?
+                step_is_success = (
+                    y_min < state.y_min - 1e-10
+                )  # maybe make this stronger?
                 failure_counter = (
                     0 if step_is_success else state.failure_counter + 1
                 )  # update or reset counter
@@ -1306,12 +1474,16 @@ class TURBO(
                     L, failure_counter, success_counter = self._L_init, 0, 0
 
             # build region with volume according to length L but stretched according to lengthscales
-            xmin = dataset.query_points[tf.argmin(dataset.observations)[0], :]  # centre of region
+            xmin = dataset.query_points[
+                tf.argmin(dataset.observations)[0], :
+            ]  # centre of region
             lengthscales = (
                 local_model.get_kernel().lengthscales
             )  # stretch region according to model lengthscales
             tr_width = (
-                lengthscales * L / tf.reduce_prod(lengthscales) ** (1.0 / global_lower.shape[-1])
+                lengthscales
+                * L
+                / tf.reduce_prod(lengthscales) ** (1.0 / global_lower.shape[-1])
             )  # keep volume fixed
             acquisition_space = Box(
                 tf.reduce_max([global_lower, xmin - tr_width / 2.0], axis=0),
@@ -1324,12 +1496,336 @@ class TURBO(
             local_model.optimize(local_dataset)
 
             # use local model and local dataset to choose next query point(s)
-            points = self._rule.acquire_single(acquisition_space, local_model, local_dataset)
-            state_ = TURBO.State(acquisition_space, L, failure_counter, success_counter, y_min)
+            points = self._rule.acquire_single(
+                acquisition_space, local_model, local_dataset
+            )
+            state_ = TURBO.State(
+                acquisition_space, L, failure_counter, success_counter, y_min
+            )
 
             return state_, points
 
         return state_func
+
+
+class ConstrainedTURBO(
+    AcquisitionRule[
+        types.State[Optional["ConstrainedTURBO.State"], TensorType],
+        Box,
+        TrainableSupportsGetKernel,
+    ]
+):
+    """Implements the Trust Region part of the SCBO algorithm from Eriksson et al. 2019
+    (https://arxiv.org/pdf/2002.08526.pdf). Based on plain TURBO implementation from above.
+    """
+
+    @dataclass(frozen=True)
+    class State:
+        """The acquisition state for the :class:`ConstrainedTURBO` acquisition rule."""
+
+        acquisition_space: Box
+        """ The search space. """
+
+        L: float
+        """ Length of the trust region """
+
+        failure_counter: int
+        """ Number of consecutive failures (reset if we see a success). """
+
+        success_counter: int
+        """ Number of consecutive successes (reset if we see a failure).  """
+
+        y_min: TensorType
+        """ The minimum observed value. If a valid point has been found, this is defined
+        as the lowest value of the objective function at a valid point. If no valid
+        point has been found, it is defined as the minimum sum of the constraint
+        violations at any point observed so far."""
+
+        def __deepcopy__(self, memo: dict[int, object]) -> ConstrainedTURBO.State:
+            box_copy = copy.deepcopy(self.acquisition_space, memo)
+            return ConstrainedTURBO.State(
+                box_copy,
+                self.L,
+                self.failure_counter,
+                self.success_counter,
+                self.y_min,
+            )
+
+    def __init__(
+        self,
+        perturbation_prob: float,
+        rule: ConstrainedTURBOEfficientGlobalOptimization,
+        equality_constraint_tolerance: float,
+        num_trust_regions: int = 1,
+        L_min: Optional[float] = None,
+        L_init: Optional[float] = None,
+        L_max: Optional[float] = None,
+        success_tolerance: int = 3,
+        failure_tolerance: Optional[int] = None,
+        local_models: Optional[Mapping[Tag, TrainableSupportsGetKernel]] = None,
+    ):
+        """
+        Note that the optional parameters are set by a heuristic if not given by the user.
+
+        :param search_space: The search space.
+        :param perturbation_prob: Probability of perturbing each dimension of the best
+            point observed so far when deciding which point to query next, as described
+            in Eriksson et al. (2019) (https://arxiv.org/pdf/1910.01739.pdf).
+        :param rule: rule used to select points from within the trust region, using the
+            local model.
+        :param equality_constraint_tolerance: Tolerance for the equality constraints to
+            be considered satsified.
+        :param num_trust_regions: Number of trust regions controlled by TURBO.
+        :param L_min: Minimum allowed length of the trust region.
+        :param L_init: Initial length of the trust region.
+        :param L_max: Maximum allowed length of the trust region.
+        :param success_tolerance: Number of consecutive successes before changing region size.
+        :param failure tolerance: Number of consecutive failures before changing region size.
+        :param local_models: Optional model to act as the local model. This will be refit using
+            the data from each trust region. If no local_models are provided then we just
+            copy the global model.
+        """
+        if not num_trust_regions > 0:
+            raise ValueError(
+                f"Num trust regions must be greater than 0, got {num_trust_regions}"
+            )
+
+        if num_trust_regions > 1:
+            raise NotImplementedError(
+                f"ConstrainedTURBO does not yet support multiple trust regions, but got {num_trust_regions}"
+            )
+
+        if failure_tolerance is None:
+            raise ValueError("failure_tolerance must be specified")
+
+        if L_min is None:
+            raise ValueError("L_min must be specified")
+        if L_init is None:
+            raise ValueError("L_init must be specified")
+        if L_max is None:
+            raise ValueError("L_max must be specified")
+
+        if not success_tolerance > 0:
+            raise ValueError(
+                f"success tolerance must be an integer greater than 0, got {success_tolerance}"
+            )
+        if not failure_tolerance > 0:
+            raise ValueError(
+                f"success tolerance must be an integer greater than 0, got {failure_tolerance}"
+            )
+
+        if L_min <= 0:
+            raise ValueError(f"L_min must be postive, got {L_min}")
+        if L_init <= 0:
+            raise ValueError(f"L_min must be postive, got {L_init}")
+        if L_max <= 0:
+            raise ValueError(f"L_min must be postive, got {L_max}")
+
+        self.perturbation_prob = perturbation_prob
+        self._num_trust_regions = num_trust_regions
+        self._L_min = L_min
+        self._L_init = L_init
+        self._L_max = L_max
+        self._success_tolerance = success_tolerance
+        self._failure_tolerance = failure_tolerance
+        self._rule = rule
+        self._local_models = local_models
+        self.valid_y_found = False
+        self.equality_constraint_tolerance = equality_constraint_tolerance
+
+    def __repr__(self) -> str:
+        """"""
+        return f"ConstrainedTURBO({self._num_trust_regions!r}, {self._rule})"
+
+    def acquire(
+        self,
+        search_space: Box,
+        models: Mapping[Tag, TrainableSupportsGetKernel],
+        datasets: Optional[Mapping[Tag, Dataset]] = None,
+    ) -> types.State[State | None, TensorType]:
+        """
+        Construct a local search space from ``search_space`` according to the ConstrainedTURBO algorithm,
+        and use that with the ``rule`` specified at :meth:`~ConstrainedTURBO.__init__` to find new
+        query points. Return a function that constructs these points given a previous trust region
+        state.
+
+        If no ``state`` is specified (it is `None`), then we build the initial trust region.
+
+        If a ``state`` is specified, and the new optimum improves over the previous optimum,
+        the previous acquisition is considered successful.
+
+        If ``success_tolerance`` previous consecutive acquisitions were successful then the search
+        space is made larger. If  ``failure_tolerance`` consecutive acquisitions were unsuccessful
+        then the search space is shrunk. If neither condition is triggered then the search space
+        remains the same.
+
+        **Note:** The acquisition search space will never extend beyond the boundary of the
+        ``search_space``. For a local search, the actual search space will be the
+        intersection of the trust region and ``search_space``.
+
+        :param search_space: The local acquisition search space for *this step*.
+        :param models: The model for each tag.
+        :param datasets: The known observer query points and observations.
+        :return: A function that constructs the next acquisition state and the recommended query
+            points from the previous acquisition state.
+        """
+        if self._local_models is None:  # if user doesnt specifiy a local model
+            self._local_models = copy.copy(
+                models
+            )  # copy global model (will be fit locally later)
+
+        if datasets is None:
+            raise ValueError(f"""datasets must be provided""")
+
+        datasets = datasets
+        local_models = self._local_models
+        global_lower = search_space.lower
+        global_upper = search_space.upper
+
+        x_min, y_min, valid_y_found = _get_constrained_turbo_y_min_and_validity(
+            datasets, self.equality_constraint_tolerance
+        )
+        newly_valid_y = valid_y_found and not self.valid_y_found
+        self.valid_y_found = valid_y_found or self.valid_y_found
+
+        def state_func(
+            state: TURBO.State | None,
+        ) -> tuple[TURBO.State | None, TensorType]:
+            if state is None:  # initialise first TR
+                L, failure_counter, success_counter = self._L_init, 0, 0
+            else:  # update TR
+                step_is_success = newly_valid_y or (y_min < state.y_min - 1e-10)
+                failure_counter = (
+                    0 if step_is_success else state.failure_counter + 1
+                )  # update or reset counter
+                success_counter = (
+                    state.success_counter + 1 if step_is_success else 0
+                )  # update or reset counter
+                L = state.L
+                if success_counter == self._success_tolerance:
+                    L *= 2.0  # make region bigger
+                    success_counter = 0
+                elif failure_counter == self._failure_tolerance:
+                    L *= 0.5  # make region smaller
+                    failure_counter = 0
+
+                L = tf.minimum(L, self._L_max)
+                if L < self._L_min:  # if gets too small then start again
+                    L, failure_counter, success_counter = self._L_init, 0, 0
+
+            tr_width = L
+            acquisition_space = Box(
+                tf.reduce_max([global_lower, x_min - tr_width / 2.0], axis=0),
+                tf.reduce_min([global_upper, x_min + tr_width / 2.0], axis=0),
+            )
+
+            # fit the local model using just data from the trust region
+            local_datasets = {}
+            for tag, local_model in local_models.items():
+                global_dataset = datasets[tag]
+                local_dataset = get_local_dataset(acquisition_space, global_dataset)
+                local_datasets[tag] = local_dataset
+                local_model.update(local_dataset)
+                local_model.optimize(local_dataset)
+
+            # Use local model and local dataset to choose next query point(s). Note that
+            # we pass in the global datasets here so that the Lagrange multipliers can
+            # be updated correctly when using TS-AL.
+            points = self._rule.acquire(
+                acquisition_space, x_min, self.perturbation_prob, local_models, datasets
+            )
+            state_ = TURBO.State(
+                acquisition_space, L, failure_counter, success_counter, y_min
+            )
+
+            return state_, points
+
+        return state_func
+
+
+def _get_constrained_turbo_y_min_and_validity(
+    datasets: Mapping[Tag, Dataset], equality_constraint_tolerance: float
+) -> tuple[TensorType, TensorType, bool]:
+    """
+    Find the best observed value so far. This is defined as the minimum objective value
+    observed so far where all constraints are satisfied, or the minimum sum of the
+    constraint violations if no queried points satisfy all constraints.
+
+    :param datasets: Datasets containing previously queried points and the observations
+        of the black-box functions at those points.
+    :param equality_constraint_tolerance: Tolerance for the equality constraints to
+        be considered satsified.
+    :return: A tuple containing the location of the best point observed so far, the
+        value of the SCBO acquisition function at that point and whether that point is
+        valid (i.e. all constraints are satisfied).
+
+    """
+    satisfied_mask = tf.constant(
+        value=True, shape=datasets[OBJECTIVE].observations.shape
+    )
+    sum_constraint_violation = tf.zeros(
+        shape=datasets[OBJECTIVE].observations.shape, dtype=tf.float64
+    )
+    for tag, dataset in datasets.items():
+        if tag.startswith(INEQUALITY_CONSTRAINT_PREFIX):
+            constraint_vals = dataset.observations
+            valid_constraint_vals = constraint_vals <= 0
+            constraint_violation_magnitudes = tf.nn.relu(constraint_vals)
+            satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+            sum_constraint_violation += constraint_violation_magnitudes
+        elif tag.startswith(EQUALITY_CONSTRAINT_PREFIX):
+            constraint_vals = dataset.observations
+            valid_constraint_vals = (
+                tf.abs(constraint_vals) <= equality_constraint_tolerance
+            )
+            constraint_violation_magnitudes = tf.where(
+                tf.abs(constraint_vals) > equality_constraint_tolerance,
+                tf.abs(constraint_vals),
+                0,
+            )
+            satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+            sum_constraint_violation += constraint_violation_magnitudes
+
+    if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+        # At least one point satisfies all constraints
+        objective_vals = datasets[OBJECTIVE].observations
+        valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
+        y_min = tf.math.reduce_min(valid_y)
+        assert objective_vals.shape[1] == 1
+        y_min_idx = tf.squeeze(
+            tf.where(tf.equal(tf.squeeze(objective_vals, axis=-1), y_min))[0]
+        )
+        x_min = datasets[OBJECTIVE].query_points[y_min_idx]
+        valid_y_found = True
+    else:
+        # Set y_min equal to the minimum sum of constraint violations
+        min_constraint_violation = tf.reduce_min(sum_constraint_violation)
+        y_min = min_constraint_violation
+        y_min_idxs = tf.where(
+            tf.equal(tf.squeeze(sum_constraint_violation, axis=-1), y_min)
+        )  # [num_min_sum_cons_violations, 1]
+        if y_min_idxs.shape[0] > 1:
+            print(f"MULTIPLE POINTS WITH SAME SUM OF CONSTRAINT VIOLATIONS")
+            # If there are multiple points with the same sum of constraint violations,
+            # choose the one with the lowest objective value. In most cases this seems
+            # like an unlikely scenario to arise.
+            y_min_idxs = tf.squeeze(
+                y_min_idxs, axis=-1
+            )  # [num_min_sum_cons_violations]
+            objective_vals = tf.squeeze(
+                datasets[OBJECTIVE].observations, axis=-1
+            )  # [N]
+            min_constraint_violation_objective_vals = tf.gather(
+                objective_vals, y_min_idxs
+            )
+            min_obj_val_idx = tf.argmin(min_constraint_violation_objective_vals)
+            y_min_idx = y_min_idxs[min_obj_val_idx]
+        else:
+            assert y_min_idxs.shape == (1, 1)
+            y_min_idx = tf.squeeze(y_min_idxs)
+        x_min = datasets[OBJECTIVE].query_points[y_min_idx]
+        valid_y_found = False
+    return x_min, y_min, valid_y_found
 
 
 class BatchHypervolumeSharpeRatioIndicator(
@@ -1359,16 +1855,22 @@ class BatchHypervolumeSharpeRatioIndicator(
         :param noisy_observations: Whether the observations have noise. Defaults to True.
         """
         if not num_query_points > 0:
-            raise ValueError(f"Num query points must be greater than 0, got {num_query_points}")
+            raise ValueError(
+                f"Num query points must be greater than 0, got {num_query_points}"
+            )
         if not ga_population_size >= num_query_points:
             raise ValueError(
                 "Population size must be greater or equal to num query points size, got num"
                 f" query points as {num_query_points} and population size as {ga_population_size}"
             )
         if not ga_n_generations > 0:
-            raise ValueError(f"Number of generation must be greater than 0, got {ga_n_generations}")
+            raise ValueError(
+                f"Number of generation must be greater than 0, got {ga_n_generations}"
+            )
         if not 0.0 <= filter_threshold < 1.0:
-            raise ValueError(f"Filter threshold must be in range [0.0,1.0), got {filter_threshold}")
+            raise ValueError(
+                f"Filter threshold must be in range [0.0,1.0), got {filter_threshold}"
+            )
         if pymoo is None:
             raise ImportError(
                 "BatchHypervolumeSharpeRatioIndicator requires pymoo, "
@@ -1400,7 +1902,9 @@ class BatchHypervolumeSharpeRatioIndicator(
 
         problem = _MeanStdTradeoff(model, search_space)
         algorithm = NSGA2(pop_size=self._population_size)
-        res = minimize(problem, algorithm, ("n_gen", self._n_generations), seed=1, verbose=False)
+        res = minimize(
+            problem, algorithm, ("n_gen", self._n_generations), seed=1, verbose=False
+        )
 
         return res.X, res.F
 
@@ -1416,7 +1920,10 @@ class BatchHypervolumeSharpeRatioIndicator(
 
         above_threshold = probs_of_improvement > self._filter_threshold
 
-        if np.sum(above_threshold) >= self._num_query_points and nd_mean_std.shape[1] == 2:
+        if (
+            np.sum(above_threshold) >= self._num_query_points
+            and nd_mean_std.shape[1] == 2
+        ):
             # There are enough points above the threshold to get a batch
             out_points, out_mean_std = (
                 nd_points[above_threshold.squeeze(), :],
@@ -1467,7 +1974,9 @@ class BatchHypervolumeSharpeRatioIndicator(
             )
 
         # Find non-dominated points
-        nd_points, nd_mean_std = self._find_non_dominated_points(models[OBJECTIVE], search_space)
+        nd_points, nd_mean_std = self._find_non_dominated_points(
+            models[OBJECTIVE], search_space
+        )
 
         # Filter out points below a threshold probability of improvement
         filtered_points, filtered_mean_std = self._filter_points(nd_points, nd_mean_std)
@@ -1489,7 +1998,9 @@ class _MeanStdTradeoff(PymooProblem):  # type: ignore[misc]
     """Inner class that formulates the mean/std optimisation problem as a
     pymoo problem"""
 
-    def __init__(self, probabilistic_model: ProbabilisticModel, search_space: SearchSpaceType):
+    def __init__(
+        self, probabilistic_model: ProbabilisticModel, search_space: SearchSpaceType
+    ):
         """
         :param probabilistic_model: The probabilistic model to find optimal mean/stds from
         :param search_space: The search space for the optimisation

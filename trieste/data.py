@@ -201,3 +201,31 @@ def add_fidelity_column(query_points: TensorType, fidelity: int) -> TensorType:
     fidelity_col = tf.ones((tf.shape(query_points)[-2], 1), dtype=query_points.dtype) * fidelity
     query_points_for_fidelity = tf.concat([query_points, fidelity_col], axis=-1)
     return query_points_for_fidelity
+
+
+def standardise(x: TensorType, mean=None, std=None):
+    """Standardise a tensor by subtracting the mean and dividing by the standard
+    deviation.
+
+    :param x: Tensor to standardise
+    :param mean: Mean to subtract from x. If None, the mean of x is used.
+    :param std: Standard deviation to divide x by. If None, the standard
+        deviation of x is used.
+
+    :return: Standardised tensor, mean and standard deviation used.
+    """
+    if mean is None:
+        mean = tf.math.reduce_mean(x, 0, True)
+    if std is None:
+        std = tf.math.sqrt(tf.math.reduce_variance(x, 0, True))
+    return (x - mean) / std, mean, std
+
+
+def bilog(x):
+    """Compute the bilogarithmic function.
+
+    :param x: Tensor to compute bilogarithmic function of.
+
+    :return: Bilogarithmic function of x.
+    """
+    return tf.sign(x) * tf.math.log(tf.abs(x) + 1)

@@ -65,6 +65,6 @@ def ackley_10(x: tf.Tensor) -> tf.Tensor:
         - tf.math.exp(exponent_2)
         + 20.0
         + tf.cast(tf.math.exp(1.0), dtype=x.dtype)
-    ), -1)
+    ), -1) / 10.0
     tf.debugging.assert_rank(objective, 2)
     return objective

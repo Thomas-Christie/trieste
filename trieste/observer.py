@@ -45,6 +45,18 @@ A tag typically used by acquisition rules to denote the data sets and models cor
 optimization objective.
 """
 
+INEQUALITY_CONSTRAINT_PREFIX: Final[Tag] = "INEQUALITY_CONSTRAINT"
+"""
+A prefix typically used by acquisition rules to denote the data sets and models
+corresponding to inequality constraints (which are considered satisfied if less than or
+equal to zero).
+"""
+
+EQUALITY_CONSTRAINT_PREFIX: Final[Tag] = "EQUALITY_CONSTRAINT"
+"""
+A prefix typically used by acquisition rules to denote the data sets and models
+corresponding to equality constraints (which are consider satisfied if equal to zero).
+"""
 
 def _is_finite(t: TensorType) -> TensorType:
     return tf.logical_and(tf.math.is_finite(t), tf.logical_not(tf.math.is_nan(t)))
