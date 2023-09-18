@@ -46,7 +46,7 @@ def run_lander(env: gym.Env, param_configs: TensorType, seed: int) -> TensorType
     param_configs = 2.0 * param_configs  # For GPs the parameters are confined to [0, 1] so rescale to [0.0, 2.0] as mentioned at https://github.com/uber-research/TuRBO 
     
     rewards = []
-    for param_config in param_configs:
+    for param_config in param_configs.numpy():
         total_reward = 0
         steps = 0
         s, _ = env.reset(seed=seed)
@@ -65,7 +65,7 @@ def run_lander(env: gym.Env, param_configs: TensorType, seed: int) -> TensorType
                 break
         rewards.append(total_reward)
 
-    return tf.Variable(rewards, dtype=tf.float64)[..., None]
+    return tf.constant(rewards, dtype=tf.float64)[..., None]
 
 def lunar_lander_observer(num_envs: int, env: gym.Env, query_points: TensorType) -> Mapping[Tag, Dataset]:
     """
@@ -77,25 +77,20 @@ def lunar_lander_observer(num_envs: int, env: gym.Env, query_points: TensorType)
     sum_rewards = tf.zeros((query_points.shape[0], 1), dtype=tf.float64)
     for env_num in range(num_envs):
         observations = run_lander(env, query_points, 42+env_num)
-        sum_rewards += observations
-        inequality_observations = -1.0 * (observations - 200.0)  # Inequality constraint considered satisfied if reward is greater than 200
+        sum_rewards += observations / 100.0 
+        inequality_observations = (-1.0 * (observations - 200.0)) / 100.0  # Inequality constraint considered satisfied if reward is greater than 200
         tagged_observations[f"INEQUALITY_CONSTRAINT_{env_num}"] = Dataset(query_points, inequality_observations)
 
-    mean_rewards = sum_rewards / num_envs
+    mean_rewards = - sum_rewards / num_envs
     tagged_observations["OBJECTIVE"] = Dataset(query_points, mean_rewards)
     return tagged_observations
 
 
 
 if __name__ == "__main__":
-    # env_name = "LunarLander-v2"
-    # env = gym.make(env_name)
+    env_name = "LunarLander-v2"
+    env = gym.make(env_name)
     
-    # search_space = trieste.space.Box([0.0] * 12, [1.0] * 12)
-    # for _ in range(10):
-    #     sample_w = search_space.sample(3).numpy()
-    #     run_lander(env, sample_w)
-    a = tf.constant([[1, 2, 3], [4, 5, 6]], dtype=tf.float64)
-    b = 2.0 * a
-    print(f"a: {a}")
-    print(f"b: {b}")
+    search_space = trieste.space.Box([0.0] * 12, [1.0] * 12)
+    sample_w = search_space.sample(3)
+    lunar_lander_observer(3, env, sample_w)

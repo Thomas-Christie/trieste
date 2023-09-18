@@ -754,6 +754,9 @@ class BayesianOptimizer(Generic[SearchSpaceType]):
                                 model.update(dataset)
                                 model.optimize_and_save_result(dataset)
 
+                    print(f"Objective Model Lengthscales: {models[OBJECTIVE].model.kernel.lengthscales}")
+                    print(f"Inequality Constraint One Lengthscales: {models['INEQUALITY_CONSTRAINT_1'].model.kernel.lengthscales}")
+
                 if summary_writer:
                     with summary_writer.as_default(step=step):
                         write_summary_observations(

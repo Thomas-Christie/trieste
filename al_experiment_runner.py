@@ -4,6 +4,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import gpflow.mean_functions
 from absl import app, flags
+import gymnasium as gym
 import tensorflow as tf
 import math
 import numpy as np
@@ -22,10 +23,8 @@ from trieste.acquisition.rule import (
     ConstrainedTURBOEfficientGlobalOptimization,
 )
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
-
 from trieste.space import Box
-from functions import constraints
-from functions import objectives
+from functions import constraints, objectives, lunar_lander
 from functions.lockwood.runlock.runlock import lockwood_constraint_observer
 from functools import partial
 import pickle
@@ -41,7 +40,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    370,
+    190,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_float(
@@ -51,7 +50,7 @@ flags.DEFINE_float(
 )
 flags.DEFINE_enum(
     "problem",
-    "LOCKWOOD",
+    "ACKLEY10",
     ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10"],
     "Test problem to use.",
 )
@@ -61,18 +60,18 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 2, "Number of points to sample at each iteration of BO."
+    "batch_size", 1, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    5,
+    10,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
     "sampling_strategy",
     "halton",
     ["halton", "sobol", "uniform_random"],
-    "Random sampling strategy for selecting " "initial points.",
+    "Random sampling strategy for selecting initial points.",
 )
 flags.DEFINE_enum(
     "acquisition_fn_optimiser",
@@ -82,7 +81,7 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    6000,
+    5000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
@@ -102,7 +101,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/lockwooyjkkhd/vanilla_adam/data/run_",
+    "final_ts_al_results/ackley_10/trust_region/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -138,6 +137,10 @@ def main(argv):
             search_space = Box(
                 tf.zeros(10, dtype=tf.float64), tf.ones(10, dtype=tf.float64)
             )
+        elif FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
+            search_space = Box(
+                tf.zeros(12, dtype=tf.float64), tf.ones(12, dtype=tf.float64)
+            )
         else:
             search_space = Box([0.0, 0.0], [1.0, 1.0])
 
@@ -162,6 +165,22 @@ def main(argv):
             )
         elif FLAGS.problem == "LOCKWOOD":
             observer = lockwood_constraint_observer
+        elif FLAGS.problem == "LUNAR10":
+            env = gym.make("LunarLander-v2")
+            observer = partial(
+                lunar_lander.lunar_lander_observer, 10, env
+            )
+        elif FLAGS.problem == "LUNAR30":
+            env = gym.make("LunarLander-v2")
+            observer = partial(
+                lunar_lander.lunar_lander_observer, 30, env
+            )
+        elif FLAGS.problem == "LUNAR50":
+            env = gym.make("LunarLander-v2")
+            observer = partial(
+                lunar_lander.lunar_lander_observer, 50, env
+            )
+            
 
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
@@ -176,10 +195,7 @@ def main(argv):
                 FLAGS.num_initial_samples, skip=42 + run * FLAGS.num_initial_samples
             )
         print(f"Initial Inputs: {initial_inputs}")
-        if FLAGS.problem == "LOCKWOOD":
-            initial_data = lockwood_constraint_observer(initial_inputs)
-        else:
-            initial_data = observer(initial_inputs)
+        initial_data = observer(initial_inputs)
         initial_models = trieste.utils.map_values(
             partial(
                 create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name
@@ -206,6 +222,18 @@ def main(argv):
         elif FLAGS.problem == "GSBP":
             inequality_lambda = {
                 INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64)
+            }
+        elif FLAGS.problem == "LUNAR10":
+            inequality_lambda = {
+                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(10)
+            }
+        elif FLAGS.problem == "LUNAR30":
+            inequality_lambda = {
+                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(30)
+            }
+        elif FLAGS.problem == "LUNAR50":
+            inequality_lambda = {
+                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(50)
             }
 
         # Initialise equality constraint Lagrange multipliers
@@ -273,7 +301,6 @@ def main(argv):
                 L_init=tf.constant(0.8, dtype=tf.float64),
                 success_tolerance=max(3, math.ceil(dimensionality / 10)),
                 failure_tolerance=math.ceil(dimensionality / FLAGS.batch_size),
-                local_models=initial_models,
             )
             bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
             data = bo.optimize(
