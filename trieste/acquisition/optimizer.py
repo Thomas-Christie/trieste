@@ -914,7 +914,7 @@ def generate_adam_optimizer(
             )  # We're trying to *maximise* 'target_func', but Adam *minimises* it
 
         opt = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=1000)
-        for i in range(200):  # TODO: Decide on number of Adam iterations
+        for i in range(150): 
             with tf.GradientTape() as tape:
                 tape.watch(optimised_points)
                 y = loss_fun(optimised_points)

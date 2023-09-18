@@ -100,9 +100,6 @@ flags.DEFINE_enum(
 flags.DEFINE_boolean(
     "trust_region", True, "Use a trust region for optimising the acquisition function."
 )
-flags.DEFINE_boolean(
-    "save_lagrange", False, "Save intermediate values of Lagrange multipliers."
-)
 flags.DEFINE_string(
     "save_path",
     "final_ts_al_results/lockwooyjkkhd/vanilla_adam/data/run_",
@@ -218,47 +215,29 @@ def main(argv):
                 EQUALITY_CONSTRAINT_TWO: tf.zeros(1, dtype=tf.float64),
             }
 
-        lambda_save_path = None
-        if FLAGS.save_path is not None:
-            lambda_save_path = FLAGS.save_path + f"{run}"
-
         if (
             FLAGS.problem == "LSQ"
             or FLAGS.problem == "ACKLEY10"
             or FLAGS.problem == "LOCKWOOD"
         ):
             augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
-                objective_tag=OBJECTIVE,
                 known_objective=known_objective,
-                inequality_constraint_prefix="INEQUALITY",
-                equality_constraint_prefix=None,
                 inequality_lambda=inequality_lambda,
                 equality_lambda=None,
                 batch_size=FLAGS.batch_size,
                 penalty=None,
                 epsilon=FLAGS.epsilon,
                 search_space=search_space,
-                plot=False,
-                save_lambda=FLAGS.save_lagrange,
-                save_path=lambda_save_path,
-                num_bo_iters=FLAGS.num_bo_iterations,
             )
         elif FLAGS.problem == "GSBP":
             augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
-                objective_tag=OBJECTIVE,
                 known_objective=known_objective,
-                inequality_constraint_prefix="INEQUALITY",
-                equality_constraint_prefix="EQUALITY",
                 inequality_lambda=inequality_lambda,
                 equality_lambda=equality_lambda,
                 batch_size=FLAGS.batch_size,
                 penalty=None,
                 epsilon=FLAGS.epsilon,
                 search_space=search_space,
-                plot=False,
-                save_lambda=FLAGS.save_lagrange,
-                save_path=lambda_save_path,
-                num_bo_iters=FLAGS.num_bo_iterations,
             )
 
         if FLAGS.acquisition_fn_optimiser == "l-bfgs-b":
