@@ -278,14 +278,13 @@ def main(argv):
 
         if FLAGS.trust_region:
             dimensionality = search_space.dimension
-            perturbation_prob = min(1.0, 20.0/(tf.cast(dimensionality, tf.float64)*10))
+            perturbation_prob = min(1.0, 20.0/tf.cast(dimensionality, tf.float64))
             constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
                 augmented_lagrangian,
                 optimizer=optimizer,
                 batch_size=FLAGS.batch_size,
             )
             rule = ConstrainedTURBO(
-                search_space=search_space,
                 perturbation_prob=perturbation_prob,
                 num_trust_regions=1,
                 rule=constrained_turbo_ego,

@@ -60,7 +60,7 @@ flags.DEFINE_enum(
     "sampling_strategy",
     "halton",
     ["halton", "sobol", "uniform_random"],
-    "Random sampling strategy for selecting " "initial points.",
+    "Random sampling strategy for selecting initial points.",
 )
 flags.DEFINE_enum(
     "acquisition_fn_optimiser",
@@ -70,13 +70,13 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    10000,
+    5000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
 flags.DEFINE_enum(
     "kernel_name",
-    "matern52",
+    "squared_exponential",
     ["matern52", "squared_exponential"],
     "Which kernel to use.",
 )
@@ -85,7 +85,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "experimental_scbo_results/ackley_10/trust_region_randomcxcxzc/data/run_",
+    "final_scbo_results/ackley_10/trust_region/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -110,7 +110,7 @@ def set_seed(seed: int):
 
 def main(argv):
     print(f"Running Experiment with Flags: {FLAGS.flags_into_string()}")
-    for run in range(10, FLAGS.num_experiments):
+    for run in range(FLAGS.num_experiments):
         print(f"Starting Run: {run}")
         set_seed(run + 42)
         if FLAGS.problem == "LOCKWOOD":
@@ -176,14 +176,13 @@ def main(argv):
 
         if FLAGS.trust_region:
             dimensionality = search_space.dimension
-            perturbation_prob = min(1.0, 20.0/(tf.cast(dimensionality, tf.float64)*10))
+            perturbation_prob = min(1.0, 20.0/tf.cast(dimensionality, tf.float64))
             constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
                 scbo,
                 optimizer=optimizer,
                 batch_size=FLAGS.batch_size,
             )
             rule = ConstrainedTURBO(
-                search_space=search_space,
                 perturbation_prob=perturbation_prob,
                 num_trust_regions=1,
                 rule=constrained_turbo_ego,
