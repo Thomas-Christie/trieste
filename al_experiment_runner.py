@@ -92,7 +92,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_enum(
     "kernel_name",
-    "squared_exponential",
+    "matern52",
     ["matern52", "squared_exponential"],
     "Which kernel to use.",
 )
@@ -101,16 +101,17 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/ackley_10/trust_region/data/run_",
+    "final_ts_al_results/updated_ackley_10/trust_region/data/run_",
     "Prefix of path to save results to.",
 )
 
 
-def create_model(search_space, num_rff_features, kernel_name, data):
+def create_model(search_space, num_rff_features, kernel_name, likelihood_variance, trainable_likelihood, data):
     gpr = build_gpr(
         data,
         search_space,
-        likelihood_variance=1e-6,
+        likelihood_variance=likelihood_variance,
+        trainable_likelihood=trainable_likelihood,
         mean=gpflow.mean_functions.Zero(),
         kernel_name=kernel_name,
     )
@@ -196,12 +197,18 @@ def main(argv):
             )
         print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
-        initial_models = trieste.utils.map_values(
-            partial(
-                create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name
-            ),
-            initial_data,
-        )
+        if FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
+            initial_models = trieste.utils.map_values(
+                partial(
+                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, None, True),
+                initial_data,
+            )
+        else:
+            initial_models = trieste.utils.map_values(
+                partial(
+                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, 1e-6, False),
+                initial_data,
+            )
 
         if FLAGS.known_objective:
             if FLAGS.problem == "LOCKWOOD":

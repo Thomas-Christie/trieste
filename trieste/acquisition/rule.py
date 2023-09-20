@@ -1694,6 +1694,7 @@ class ConstrainedTURBO(
             if state is None:  # initialise first TR
                 L, failure_counter, success_counter = self._L_init, 0, 0
             else:  # update TR
+                print(f"y_min: {y_min}")
                 step_is_success = newly_valid_y or (y_min < state.y_min - 1e-10)
                 failure_counter = (
                     0 if step_is_success else state.failure_counter + 1
@@ -1718,12 +1719,18 @@ class ConstrainedTURBO(
                 tf.reduce_max([global_lower, x_min - tr_width / 2.0], axis=0),
                 tf.reduce_min([global_upper, x_min + tr_width / 2.0], axis=0),
             )
+            print(f"Acquisition Space Upper: {acquisition_space.upper}")
+            print(f"Acquisition Space Lower: {acquisition_space.lower}")
 
             # fit the local model using just data from the trust region
             local_datasets = {}
+            print(f"x_min: {x_min}")
+            print(f"TR Width: {tr_width}")
             for tag, local_model in local_models.items():
                 global_dataset = datasets[tag]
+                print(f"Tag: {tag} Global Dataset Num Points: {global_dataset.observations.shape[0]}")
                 local_dataset = get_local_dataset(acquisition_space, global_dataset)
+                print(f"Tag: {tag} Local Dataset Num Points: {local_dataset.observations.shape[0]}")
                 local_datasets[tag] = local_dataset
                 local_model.update(local_dataset)
                 local_model.optimize(local_dataset)
@@ -1761,20 +1768,20 @@ def _get_constrained_turbo_y_min_and_validity(
 
     """
     satisfied_mask = tf.constant(
-        value=True, shape=datasets[OBJECTIVE].observations.shape
+        value=True, shape=datasets[OBJECTIVE].observations.shape[0]
     )
     sum_constraint_violation = tf.zeros(
-        shape=datasets[OBJECTIVE].observations.shape, dtype=tf.float64
+        shape=datasets[OBJECTIVE].observations.shape[0], dtype=tf.float64
     )
     for tag, dataset in datasets.items():
         if tag.startswith(INEQUALITY_CONSTRAINT_PREFIX):
-            constraint_vals = dataset.observations
+            constraint_vals = tf.squeeze(dataset.observations, axis=-1)
             valid_constraint_vals = constraint_vals <= 0
             constraint_violation_magnitudes = tf.nn.relu(constraint_vals)
             satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
             sum_constraint_violation += constraint_violation_magnitudes
         elif tag.startswith(EQUALITY_CONSTRAINT_PREFIX):
-            constraint_vals = dataset.observations
+            constraint_vals = tf.squeeze(dataset.observations, axis=-1)
             valid_constraint_vals = (
                 tf.abs(constraint_vals) <= equality_constraint_tolerance
             )
@@ -1787,23 +1794,20 @@ def _get_constrained_turbo_y_min_and_validity(
             sum_constraint_violation += constraint_violation_magnitudes
 
     if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+        print(f"At least one point satisfied!")
         # At least one point satisfies all constraints
-        objective_vals = datasets[OBJECTIVE].observations
+        objective_vals = tf.squeeze(datasets[OBJECTIVE].observations, axis=-1)
         valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
         y_min = tf.math.reduce_min(valid_y)
-        assert objective_vals.shape[1] == 1
-        y_min_idx = tf.squeeze(
-            tf.where(tf.equal(tf.squeeze(objective_vals, axis=-1), y_min))[0]
-        )
+        y_min_idx = tf.where(tf.logical_and(satisfied_mask, objective_vals == y_min))[0][0]
+        print(f"y_min_idx: {y_min_idx}")
         x_min = datasets[OBJECTIVE].query_points[y_min_idx]
         valid_y_found = True
     else:
         # Set y_min equal to the minimum sum of constraint violations
         min_constraint_violation = tf.reduce_min(sum_constraint_violation)
         y_min = min_constraint_violation
-        y_min_idxs = tf.where(
-            tf.equal(tf.squeeze(sum_constraint_violation, axis=-1), y_min)
-        )  # [num_min_sum_cons_violations, 1]
+        y_min_idxs = tf.where(tf.equal(sum_constraint_violation, y_min))  # [num_min_sum_cons_violations, 1]
         if y_min_idxs.shape[0] > 1:
             print(f"MULTIPLE POINTS WITH SAME SUM OF CONSTRAINT VIOLATIONS")
             # If there are multiple points with the same sum of constraint violations,

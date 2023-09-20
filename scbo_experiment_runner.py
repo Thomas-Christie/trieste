@@ -34,12 +34,12 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    19,
+    190,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_enum(
     "problem",
-    "LUNAR10",
+    "ACKLEY10",
     ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "LUNAR10", "LUNAR30", "LUNAR50"],
     "Test problem to use.",
 )
@@ -49,11 +49,11 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 5, "Number of points to sample at each iteration of BO."
+    "batch_size", 1, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    5,
+    10,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -76,7 +76,7 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_enum(
     "kernel_name",
-    "squared_exponential",
+    "matern52",
     ["matern52", "squared_exponential"],
     "Which kernel to use.",
 )
@@ -85,16 +85,17 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_scbo_results/lunar_50/trust_region/data/run_",
+    "final_scbo_results/updated_ackley_10/trust_region/data/run_",
     "Prefix of path to save results to.",
 )
 
 
-def create_model(search_space, num_rff_features, kernel_name, data):
+def create_model(search_space, num_rff_features, kernel_name, likelihood_variance, trainable_likelihood, data):
     gpr = build_gpr(
         data,
         search_space,
-        likelihood_variance=1e-6,
+        likelihood_variance=likelihood_variance,
+        trainable_likelihood=trainable_likelihood,
         mean=gpflow.mean_functions.Zero(),
         kernel_name=kernel_name,
     )
@@ -172,12 +173,20 @@ def main(argv):
             )
         print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
-        initial_models = trieste.utils.map_values(
-            partial(
-                create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name
-            ),
-            initial_data,
-        )
+        if FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
+            initial_models = trieste.utils.map_values(
+                partial(
+                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, None, True),
+                initial_data,
+            )
+        else:
+            initial_models = trieste.utils.map_values(
+                partial(
+                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, 1e-6, False),
+                initial_data,
+            )
+
+        print(f"Initial Objective Likelihood Variance: {initial_models['OBJECTIVE'].model.likelihood.variance}")
 
         scbo = SCBO()
 

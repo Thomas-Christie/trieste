@@ -380,6 +380,12 @@ def _get_kernel(
         kernel = gpflow.kernels.Matern52(variance=variance, lengthscales=lengthscales)
     elif kernel_name == "squared_exponential":
         kernel = gpflow.kernels.SquaredExponential(variance=variance, lengthscales=lengthscales)
+    
+    lengthscale_lb = ((search_space.upper - search_space.lower) * math.sqrt(search_space.dimension)) / 100.0
+    lengthscale_ub = (search_space.upper - search_space.lower) * math.sqrt(search_space.dimension)
+    legthscales_transform = tfp.bijectors.Sigmoid(low=lengthscale_lb, high=lengthscale_ub)
+    lengthscales = gpflow.base.Parameter(lengthscales, transform=legthscales_transform, dtype=tf.float64)
+    kernel.lengthscales = lengthscales
 
     if add_prior_to_lengthscale:
         kernel.lengthscales.prior = tfp.distributions.LogNormal(
@@ -389,6 +395,7 @@ def _get_kernel(
         kernel.variance.prior = tfp.distributions.LogNormal(
             tf.math.log(variance), KERNEL_PRIOR_SCALE
         )
+    print(f"Lengthscale Transformations: {kernel.lengthscales.transform}")
 
     return kernel
 
@@ -421,8 +428,14 @@ def _set_gaussian_likelihood_variance(
         tf.debugging.assert_positive(likelihood_variance)
         noise_variance = tf.cast(likelihood_variance, dtype=gpflow.default_float())
 
+    # model.likelihood.variance = gpflow.base.Parameter(
+    #     noise_variance, transform=gpflow.utilities.positive(lower=1e-12)
+    # )
+    low = tf.constant(1e-12, dtype=tf.float64)
+    high = tf.constant(0.1, dtype=tf.float64)
+    bound_transform = tfp.bijectors.Sigmoid(low=low, high=high)
     model.likelihood.variance = gpflow.base.Parameter(
-        noise_variance, transform=gpflow.utilities.positive(lower=1e-12)
+        noise_variance, transform=bound_transform, dtype=tf.float64
     )
 
 

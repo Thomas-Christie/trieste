@@ -89,8 +89,10 @@ def lunar_lander_observer(num_envs: int, env: gym.Env, query_points: TensorType)
 
 if __name__ == "__main__":
     env_name = "LunarLander-v2"
-    env = gym.make(env_name)
+    env = gym.make(env_name, render_mode="human")
     
     search_space = trieste.space.Box([0.0] * 12, [1.0] * 12)
     sample_w = search_space.sample(3)
-    lunar_lander_observer(3, env, sample_w)
+    a = tf.constant([[0.97736803, 0.73969325, 0.30885848, 0.40588711, 0.8175496,  0.93936169,
+                      0.1362836,  0.54899272, 0.02122464, 0.85753745, 0.16552496, 0.02558125]], dtype=tf.float64)
+    lunar_lander_observer(10, env, a)
