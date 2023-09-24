@@ -40,7 +40,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    190,
+    19,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_float(
@@ -50,8 +50,8 @@ flags.DEFINE_float(
 )
 flags.DEFINE_enum(
     "problem",
-    "ACKLEY10",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10"],
+    "LUNAR10",
+    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "LUNAR10", "LUNAR30", "LUNAR50"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -60,11 +60,11 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 1, "Number of points to sample at each iteration of BO."
+    "batch_size", 50, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    10,
+    50,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -101,7 +101,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/updated_ackley_10/trust_region/data/run_",
+    "final_ts_al_results/lunar_10/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -254,6 +254,9 @@ def main(argv):
             FLAGS.problem == "LSQ"
             or FLAGS.problem == "ACKLEY10"
             or FLAGS.problem == "LOCKWOOD"
+            or FLAGS.problem == "LUNAR10"
+            or FLAGS.problem == "LUNAR30"
+            or FLAGS.problem == "LUNAR50"
         ):
             augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
                 known_objective=known_objective,
