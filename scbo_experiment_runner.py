@@ -34,12 +34,12 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    370,
+    19,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_enum(
     "problem",
-    "LOCKWOOD",
+    "LUNAR10",
     ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "LUNAR10", "LUNAR30", "LUNAR50"],
     "Test problem to use.",
 )
@@ -49,11 +49,11 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 1, "Number of points to sample at each iteration of BO."
+    "batch_size", 50, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    30,
+    50,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -70,7 +70,7 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    3000,
+    5000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
@@ -85,7 +85,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_scbo_results/lockwood/trust_region/data/run_",
+    "final_scbo_results/corrected_lunar_10/data/run_",
     "Prefix of path to save results to.",
 )
 

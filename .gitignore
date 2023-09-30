@@ -143,3 +143,5 @@ functions/lockwood/*
 !functions/lockwood/runlock
 functions/lockwood/runlock/*
 !functions/lockwood/runlock/runlock.py
+
+functions/Mazda_CdMOBP/*

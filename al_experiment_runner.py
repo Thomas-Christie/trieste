@@ -101,7 +101,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/lunar_10/data/run_",
+    "final_ts_al_results/corrected_lunar_10/data/run_",
     "Prefix of path to save results to.",
 )
 
