@@ -144,4 +144,10 @@ functions/lockwood/*
 functions/lockwood/runlock/*
 !functions/lockwood/runlock/runlock.py
 
-functions/Mazda_CdMOBP/*
+# Mazda runner
+functions/mazda/*
+!functions/mazda/Mazda_CdMOBP
+functions/mazda/Mazda_CdMOBP/*
+!functions/mazda/Mazda_CdMOBP/src
+functions/mazda/Mazda_CdMOBP/src/*
+!functions/mazda/Mazda_CdMOBP/src/mazda_runner.py 
