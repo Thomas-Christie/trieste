@@ -18,8 +18,8 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 FLAGS = flags.FLAGS
 
 flags.DEFINE_integer('num_experiments', 1, 'Number of repeats of experiment to run.')
-flags.DEFINE_integer('num_samples', 1000, 'Number of random points to sample.')
-flags.DEFINE_enum('problem', 'MAZDA', ['LSQ', 'GSBP', 'LOCKWOOD', 'ACKLEY10', 'MAZDA'], 'Test problem to use.')
+flags.DEFINE_integer('num_samples', 100000, 'Number of random points to sample.')
+flags.DEFINE_enum('problem', 'KEANE30', ['LSQ', 'GSBP', 'LOCKWOOD', 'ACKLEY10', 'KEANE30', 'MAZDA'], 'Test problem to use.')
 flags.DEFINE_string('save_path', 'results/20-04-23dsfdsf/lockwood_random/data/', 'Prefix of path to save results to.')
 
 
@@ -45,6 +45,10 @@ def main(argv):
             search_space = Box(
                 tf.zeros(10, dtype=tf.float64), tf.ones(10, dtype=tf.float64)
             )
+        elif FLAGS.problem == "KEANE30":
+            search_space = Box(
+                tf.zeros(30, dtype=tf.float64), tf.ones(30, dtype=tf.float64)
+            )
         else:
             search_space = Box([0.0, 0.0], [1.0, 1.0])
 
@@ -65,6 +69,12 @@ def main(argv):
                 OBJECTIVE=objectives.ackley_10,
                 INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,
                 INEQUALITY_CONSTRAINT_TWO=constraints.ackley_10_constraint_two,
+            )
+        elif FLAGS.problem == "KEANE30":
+            observer = trieste.objectives.utils.mk_multi_observer(
+                OBJECTIVE=objectives.keane_bump_30,
+                INEQUALITY_CONSTRAINT_ONE=constraints.keane_bump_30_constraint_one,
+                INEQUALITY_CONSTRAINT_TWO=constraints.keane_bump_30_constraint_two,
             )
         elif FLAGS.problem == "LOCKWOOD":
             observer = lockwood_constraint_observer

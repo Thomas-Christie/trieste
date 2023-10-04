@@ -106,3 +106,28 @@ def ackley_10_constraint_two(x: tf.Tensor) -> tf.Tensor:
     constraint = (tf.norm(x, ord=2, axis=-1, keepdims=True) - 5) / 10.0
     tf.debugging.assert_rank(constraint, 2)
     return constraint
+
+def keane_bump_30_constraint_one(x: tf.Tensor) -> tf.Tensor:
+    """
+    Taken from https://arxiv.org/pdf/2002.08526.pdf. Evaluated over [0,1]^30
+    :param x: locations to evaluate constraint at of shape [N, 30]
+    :return: constraint values at locations "x" with shape [N, 1]
+    """
+    x = 10.0 * x 
+    constraint = (0.75 - tf.reduce_prod(x, axis=-1, keepdims=True))
+    constraint = (tf.sign(constraint) * tf.math.log(tf.abs(constraint) + 1)) / 10.0
+    tf.debugging.assert_rank(constraint, 2)
+    return constraint
+
+def keane_bump_30_constraint_two(x: tf.Tensor) -> tf.Tensor:
+    """
+    Taken from https://arxiv.org/pdf/2002.08526.pdf. Evaluated over [0,1]^30
+    :param x: locations to evaluate constraint at of shape [N, 30]
+    :return: constraint values at locations "x" with shape [N, 1]
+    """
+    x = 10.0 * x
+    constraint = tf.reduce_sum(x, axis=-1, keepdims=True) - 7.5 * 30
+    constraint = tf.sign(constraint) * tf.math.log(tf.abs(constraint) + 1)
+    tf.debugging.assert_rank(constraint, 2)
+    return constraint
+

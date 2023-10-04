@@ -68,3 +68,18 @@ def ackley_10(x: tf.Tensor) -> tf.Tensor:
     ), -1) / 10.0
     tf.debugging.assert_rank(objective, 2)
     return objective
+
+def keane_bump_30(x: tf.Tensor) -> tf.Tensor:
+    """
+    The Keane bump test function over :math:`[0, 1]^30`. Taken from 
+    https://arxiv.org/pdf/2002.08526.pdf.
+
+    :param x: The points at which to evaluate the function, with shape [N, 30].
+    :return The function values at ``x``, with shape [N, 1].
+    """
+    x = 10.0 * x
+    numerator = tf.reduce_sum(tf.math.cos(x) ** 4, axis=-1, keepdims=True) - 2.0 * tf.reduce_prod(tf.math.cos(x) ** 2, axis=-1, keepdims=True)
+    denominator = tf.math.sqrt(tf.reduce_sum(tf.range(1, 31, dtype=x.dtype) * (x ** 2), axis=-1, keepdims=True)) 
+    objective = (-1.0 * tf.abs(numerator / denominator)) / 0.1
+    tf.debugging.assert_rank(objective, 2)
+    return objective

@@ -26,6 +26,7 @@ from trieste.models.gpflow import build_gpr, GaussianProcessRegression
 from trieste.space import Box
 from functions import constraints, objectives, lunar_lander
 from functions.lockwood.runlock.runlock import lockwood_constraint_observer
+from functions.mazda.Mazda_CdMOBP.src.mazda_runner import mazda_observer
 from functools import partial
 import pickle
 
@@ -40,7 +41,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    19,
+    28,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_float(
@@ -50,8 +51,8 @@ flags.DEFINE_float(
 )
 flags.DEFINE_enum(
     "problem",
-    "LUNAR10",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "LUNAR10", "LUNAR30", "LUNAR50"],
+    "KEANE30",
+    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "KEANE30", "LUNAR10", "LUNAR30", "LUNAR50", "MAZDA"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -64,7 +65,7 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    50,
+    100,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -101,7 +102,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/corrected_lunar_10/data/run_",
+    "final_ts_al_results/keane_30/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -138,6 +139,14 @@ def main(argv):
             search_space = Box(
                 tf.zeros(10, dtype=tf.float64), tf.ones(10, dtype=tf.float64)
             )
+        elif FLAGS.problem == "KEANE30":
+            search_space = Box(
+                tf.zeros(30, dtype=tf.float64), tf.ones(30, dtype=tf.float64)
+            )
+        elif FLAGS.problem == "MAZDA":
+            search_space = Box(
+                tf.zeros(222, dtype=tf.float64), tf.ones(222, dtype=tf.float64)
+            )
         elif FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
             search_space = Box(
                 tf.zeros(12, dtype=tf.float64), tf.ones(12, dtype=tf.float64)
@@ -164,6 +173,14 @@ def main(argv):
                 INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,
                 INEQUALITY_CONSTRAINT_TWO=constraints.ackley_10_constraint_two,
             )
+        elif FLAGS.problem == "KEANE30":
+            observer = trieste.objectives.utils.mk_multi_observer(
+                OBJECTIVE=objectives.keane_bump_30,
+                INEQUALITY_CONSTRAINT_ONE=constraints.keane_bump_30_constraint_one,
+                INEQUALITY_CONSTRAINT_TWO=constraints.keane_bump_30_constraint_two,
+            )
+        elif FLAGS.problem == "MAZDA":
+            observer = mazda_observer
         elif FLAGS.problem == "LOCKWOOD":
             observer = lockwood_constraint_observer
         elif FLAGS.problem == "LUNAR10":
@@ -221,6 +238,7 @@ def main(argv):
             FLAGS.problem == "LSQ"
             or FLAGS.problem == "ACKLEY10"
             or FLAGS.problem == "LOCKWOOD"
+            or FLAGS.problem == "KEANE30"
         ):
             inequality_lambda = {
                 INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64),
@@ -229,6 +247,10 @@ def main(argv):
         elif FLAGS.problem == "GSBP":
             inequality_lambda = {
                 INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64)
+            }
+        elif FLAGS.problem == "MAZDA":
+            inequality_lambda = {
+                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(1, 55)
             }
         elif FLAGS.problem == "LUNAR10":
             inequality_lambda = {
@@ -253,7 +275,9 @@ def main(argv):
         if (
             FLAGS.problem == "LSQ"
             or FLAGS.problem == "ACKLEY10"
+            or FLAGS.problem == "KEANE30"
             or FLAGS.problem == "LOCKWOOD"
+            or FLAGS.problem == "MAZDA"
             or FLAGS.problem == "LUNAR10"
             or FLAGS.problem == "LUNAR30"
             or FLAGS.problem == "LUNAR50"
