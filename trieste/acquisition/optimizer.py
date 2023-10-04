@@ -154,7 +154,6 @@ def _get_max_discrete_points(
     if V < 0:
         raise ValueError(f"vectorization must be positive, got {V}")
 
-    tiled_points = tf.tile(points, [1, V, 1])
     if x_min is not None and perturbation_prob is not None:
         # If a perturbation probability is provided, we perturb each dimension of the
         # best point found so far with probability `perturbation_prob`. Eriksson et al. 2019
@@ -163,9 +162,9 @@ def _get_max_discrete_points(
         # discovered point so far when choosing a new point to query.
         tf.debugging.assert_rank(x_min, 1)
         x_min = x_min[None, None, ...]
-        perturb = tf.cast(tfp.distributions.Bernoulli(probs=perturbation_prob).sample(sample_shape=tiled_points.shape), tf.bool)
-        tiled_points = tf.where(perturb, tiled_points, x_min)
-
+        perturb = tf.cast(tfp.distributions.Bernoulli(probs=perturbation_prob).sample(sample_shape=points.shape), tf.bool)
+        points = tf.where(perturb, points, x_min)
+    tiled_points = tf.tile(points, [1, V, 1])
     target_func_values = target_func(tiled_points)
     tf.debugging.assert_shapes(
         [(target_func_values, ("_", V))],
@@ -177,7 +176,6 @@ def _get_max_discrete_points(
             """
         ),
     )
-
     best_indices = tf.math.argmax(target_func_values, axis=0)  # [V]
     return tf.gather(
         tf.transpose(tiled_points, [1, 0, 2]), best_indices, batch_dims=1
@@ -842,7 +840,6 @@ def generate_adam_optimizer(
         candidates = space.sample(num_initial_samples)[
             :, None, :
         ]  # [num_initial_samples, 1, D]
-        tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
 
         if x_min is None and perturbation_prob is None:
             # If we havent't set a `perturbation_prob` value (as will be the case if we aren't using a
@@ -856,11 +853,13 @@ def generate_adam_optimizer(
 
         perturb = tf.cast(
             tfp.distributions.Bernoulli(probs=perturbation_prob).sample(
-                sample_shape=tiled_candidates.shape
+                sample_shape=candidates.shape
             ),
             tf.bool,
         )
-        tiled_candidates = tf.where(perturb, tiled_candidates, x_min)
+        candidates = tf.where(perturb, candidates, x_min)
+        tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
+        tiled_perturb = tf.tile(perturb, [1, V, 1])  # [num_initial_samples, V, D]
 
         target_func_values = target_func(tiled_candidates)  # [num_samples, V]
         tf.debugging.assert_shapes(
@@ -881,13 +880,13 @@ def generate_adam_optimizer(
         tiled_candidates = tf.transpose(
             tiled_candidates, [1, 0, 2]
         )  # [V, num_initial_samples, D]
-        perturb = tf.transpose(perturb, [1, 0, 2])  # [V, num_initial_samples, D]
+        tiled_perturb = tf.transpose(tiled_perturb, [1, 0, 2])  # [V, num_initial_samples, D]
         top_k_points = tf.gather(
             tiled_candidates, top_k_indices, batch_dims=1
         )  # [V, 1, D]
-        top_k_perturb = tf.gather(perturb, top_k_indices, batch_dims=1)  # [V, 1, D]
+        top_k_tiled_perturb = tf.gather(tiled_perturb, top_k_indices, batch_dims=1)  # [V, 1, D]
         initial_points = tf.transpose(top_k_points, [1, 0, 2])  # [1, V, D]
-        initial_points_perturb = tf.transpose(top_k_perturb, [1, 0, 2])  # [1, V, D]
+        initial_points_perturb = tf.transpose(top_k_tiled_perturb, [1, 0, 2])  # [1, V, D]
         # Use this mask to zero out gradients of non-perturbed points to ensure that
         # they don't get perturbed by gradient-based optimisation.
         perturb_grad_mask = tf.cast(initial_points_perturb, tf.float64)
