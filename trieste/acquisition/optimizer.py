@@ -201,12 +201,13 @@ def optimize_discrete(
     return _get_max_discrete_points(points, target_func)
 
 
+# WARNING: Below has been adapted solely for running paper experiments.
 def generate_continuous_optimizer(
     num_initial_samples: int = NUM_SAMPLES_MIN,
     num_optimization_runs: int = 10,
     num_recovery_runs: int = 10,
     optimizer_args: Optional[dict[str, Any]] = None,
-) -> AcquisitionOptimizer[Box | TaggedProductSearchSpace]:
+) -> ConstrainedTrustRegionAcquisitionOptimizer[Box | TaggedProductSearchSpace]:
     """
     Generate a gradient-based optimizer for :class:'Box' and :class:'TaggedProductSearchSpace'
     spaces and batches of size 1. In the case of a :class:'TaggedProductSearchSpace', We perform
@@ -260,6 +261,8 @@ def generate_continuous_optimizer(
     def optimize_continuous(
         space: Box | TaggedProductSearchSpace,
         target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+        x_min: Optional[TensorType] = None,
+        perturbation_prob: Optional[float] = None,
     ) -> TensorType:
         """
         A gradient-based :const:`AcquisitionOptimizer` for :class:'Box'
@@ -277,6 +280,12 @@ def generate_continuous_optimizer(
         :param space: The space over which to search.
         :param target_func: The function to maximise, with input shape [..., V, D] and output shape
                 [..., V].
+        :x_min: Location of best point found in the search space so far.
+        :perturbation_prob: Probability of perturbing a dimension of the
+        best value found so far. Eriksson et al. 2019
+        (https://arxiv.org/pdf/1910.01739.pdf) reason that once we're in
+        high-dimensional spaces we shouldn't perturb all dimensions of the best
+        discovered point so far when choosing a new point to query.
         :return: The V points in ``space`` that maximises``target_func``, with shape [V, D].
         """
 
@@ -284,14 +293,33 @@ def generate_continuous_optimizer(
             target_func, V = target_func
         else:
             V = 1
-
-        if V < 0:
-            raise ValueError(f"vectorization must be positive, got {V}")
+        
+        if V != 1:
+            raise ValueError("This modified optimizer only supports vectorization of 1")
 
         candidates = space.sample(num_initial_samples)[
             :, None, :
         ]  # [num_initial_samples, 1, D]
+
+        if x_min is None and perturbation_prob is None:
+            # If we havent't set a `perturbation_prob` value (as will be the case if we aren't using a
+            # trust-region based approach) then we set it to 1.0 so that all dimensions
+            # of the best value found so far are perturbed.
+            x_min = tf.zeros(shape=(1, 1, space.dimension), dtype=tf.float64)
+            perturbation_prob = 1.0
+        else:
+            tf.debugging.assert_rank(x_min, 1)
+            x_min = x_min[None, None, ...]
+
+        perturb = tf.cast(
+            tfp.distributions.Bernoulli(probs=perturbation_prob).sample(
+                sample_shape=candidates.shape
+            ),
+            tf.bool,
+        )
+        candidates = tf.where(perturb, candidates, x_min)
         tiled_candidates = tf.tile(candidates, [1, V, 1])  # [num_initial_samples, V, D]
+        tiled_perturb = tf.tile(perturb, [1, V, 1])  # [num_initial_samples, V, D]
 
         target_func_values = target_func(tiled_candidates)  # [num_samples, V]
         tf.debugging.assert_shapes(
@@ -312,12 +340,18 @@ def generate_continuous_optimizer(
         tiled_candidates = tf.transpose(
             tiled_candidates, [1, 0, 2]
         )  # [V, num_initial_samples, D]
+        tiled_perturb = tf.transpose(tiled_perturb, [1, 0, 2])  # [V, num_initial_samples, D]
         top_k_points = tf.gather(
             tiled_candidates, top_k_indices, batch_dims=1
         )  # [V, num_optimization_runs, D]
+        top_k_tiled_perturb = tf.gather(tiled_perturb, top_k_indices, batch_dims=1)  # [V, num_optimization_runs, D]
         initial_points = tf.transpose(
             top_k_points, [1, 0, 2]
         )  # [num_optimization_runs,V,D]
+        initial_points_perturb = tf.transpose(top_k_tiled_perturb, [1, 0, 2])  # [num_optimization_runs, V, D]
+        # Use this mask to zero out gradients of non-perturbed points to ensure that
+        # they don't get perturbed by gradient-based optimisation.
+        perturb_grad_mask = tf.cast(initial_points_perturb, tf.float64)
 
         (
             successes,
@@ -328,93 +362,17 @@ def generate_continuous_optimizer(
             target_func,
             space,
             initial_points,
+            perturb_grad_mask,
             optimizer_args or {},
         )
 
-        successful_optimization = tf.reduce_all(
-            tf.reduce_any(successes, axis=0)
-        )  # Check that at least one optimization was successful for each function
-        total_nfev = tf.reduce_max(
-            nfev
-        )  # acquisition function is evaluated in parallel
-
-        recovery_run = False
-        if (
-            num_recovery_runs and not successful_optimization
-        ):  # if all optimizations failed for a function then try again from random starts
-            random_points = space.sample(num_recovery_runs)[
-                :, None, :
-            ]  # [num_recovery_runs, 1, D]
-            tiled_random_points = tf.tile(
-                random_points, [1, V, 1]
-            )  # [num_recovery_runs, V, D]
-
-            (
-                recovery_successes,
-                recovery_fun_values,
-                recovery_chosen_x,
-                recovery_nfev,
-            ) = _perform_parallel_continuous_optimization(
-                target_func, space, tiled_random_points, optimizer_args or {}
-            )
-
-            successes = tf.concat(
-                [successes, recovery_successes], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V]
-            fun_values = tf.concat(
-                [fun_values, recovery_fun_values], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V]
-            chosen_x = tf.concat(
-                [chosen_x, recovery_chosen_x], axis=0
-            )  # [num_optimization_runs + num_recovery_runs, V, D]
-
-            successful_optimization = tf.reduce_all(
-                tf.reduce_any(successes, axis=0)
-            )  # Check that at least one optimization was successful for each function
-            total_nfev += tf.reduce_max(recovery_nfev)
-            recovery_run = True
-
-        if not successful_optimization:  # return error if still failed
-            raise FailedOptimizationError(
-                f"""
-                    Acquisition function optimization failed,
-                    even after {num_recovery_runs + num_optimization_runs} restarts.
-                    """
-            )
-
-        summary_writer = logging.get_tensorboard_writer()
-        if summary_writer:
-            with summary_writer.as_default(step=logging.get_step_number()):
-                logging.scalar("spo_af_evaluations", total_nfev)
-                if recovery_run:
-                    logging.text(
-                        "spo_recovery_run",
-                        f"Acquisition function optimization failed after {num_optimization_runs} "
-                        f"optimization runs, requiring recovery runs",
-                    )
-
-                _target_func: AcquisitionFunction = target_func  # make mypy happy
-
-                def improvements() -> tf.Tensor:
-                    best_initial_values = tf.math.reduce_max(
-                        _target_func(initial_points), axis=0
-                    )
-                    best_values = tf.math.reduce_max(fun_values, axis=0)
-                    improve = best_values - tf.cast(
-                        best_initial_values, best_values.dtype
-                    )
-                    return improve[0] if V == 1 else improve
-
-                if V == 1:
-                    logging.scalar("spo_improvement_on_initial_samples", improvements)
-                else:
-                    logging.histogram(
-                        "spo_improvements_on_initial_samples", improvements
-                    )
-
-        best_run_ids = tf.math.argmax(fun_values, axis=0)  # [V]
-        chosen_points = tf.gather(
-            tf.transpose(chosen_x, [1, 0, 2]), best_run_ids, batch_dims=1
+        # fun_values: [num_optimization_runs, V] - We fix num_optimization_runs = 1
+        # chosen_x: [num_optimization_runs, V, D] - We fix num_optimization_runs = 1
+        fun_values = tf.squeeze(fun_values, axis=0)  # [V]
+        chosen_x = tf.squeeze(chosen_x, axis=0)  # [V, D]
+        squeezed_initial_points = tf.squeeze(initial_points, axis=0)
+        chosen_points = tf.where(
+            tf.squeeze(successes, axis=0)[:, None], chosen_x, squeezed_initial_points
         )  # [V, D]
 
         return chosen_points
@@ -426,6 +384,7 @@ def _perform_parallel_continuous_optimization(
     target_func: AcquisitionFunction,
     space: SearchSpace,
     starting_points: TensorType,
+    perturb_grad_mask: TensorType,
     optimizer_args: dict[str, Any],
 ) -> Tuple[TensorType, TensorType, TensorType, TensorType]:
     """
@@ -460,6 +419,9 @@ def _perform_parallel_continuous_optimization(
         [num_optimization_runs, V, D]. The leading dimension of
         `starting_points` controls the number of individual optimization runs
         for each of the V target functions.
+    :param perturb_grad_mask: A mask to zero out gradients of non-perturbed points to
+        ensure that they don't get perturbed by gradient-based optimisation. Has same
+        shape as `starting_points` i.e. [num_optimization_runs, V, D].
     :param optimizer_args: Keyword arguments to pass to the Scipy optimizer.
     :return: A tuple containing the failure statuses, maximum values, maximisers and
         number of evaluations for each of our optimizations.
@@ -476,6 +438,9 @@ def _perform_parallel_continuous_optimization(
     vectorized_starting_points = tf.reshape(
         starting_points, [-1, D]
     )  # [num_optimization_runs*V, D]
+    vectorized_perturb_grad_mask = tf.reshape(
+        perturb_grad_mask, [-1, D]
+    )  # [num_optimization_runs*V, D]
 
     def _objective_value(vectorized_x: TensorType) -> TensorType:  # [N, D] -> [N, 1]
         vectorized_x = vectorized_x[:, None, :]  # [N, 1, D]
@@ -485,9 +450,11 @@ def _perform_parallel_continuous_optimization(
         return vectorized_evals
 
     def _objective_value_and_gradient(x: TensorType) -> Tuple[TensorType, TensorType]:
-        return tfp.math.value_and_gradient(
+        val, gradient = tfp.math.value_and_gradient(
             _objective_value, x
         )  # [len(x), 1], [len(x), D]
+        masked_gradient = vectorized_perturb_grad_mask * gradient
+        return val, masked_gradient
 
     if isinstance(
         space, TaggedProductSearchSpace

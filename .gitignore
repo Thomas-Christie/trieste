@@ -151,3 +151,7 @@ functions/mazda/Mazda_CdMOBP/*
 !functions/mazda/Mazda_CdMOBP/src
 functions/mazda/Mazda_CdMOBP/src/*
 !functions/mazda/Mazda_CdMOBP/src/mazda_runner.py 
+
+# Mazda result files
+final_scbo_results/mazda/data/*
+final_ts_al_results/mazda/data/*

@@ -41,7 +41,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    28,
+    22,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_float(
@@ -51,21 +51,21 @@ flags.DEFINE_float(
 )
 flags.DEFINE_enum(
     "problem",
-    "KEANE30",
+    "MAZDA",
     ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "KEANE30", "LUNAR10", "LUNAR30", "LUNAR50", "MAZDA"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
     "num_rff_features",
-    1000,
+    500,
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 50, "Number of points to sample at each iteration of BO."
+    "batch_size", 100, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    100,
+    300,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -102,7 +102,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_ts_al_results/keane_30/data/run_",
+    "final_ts_al_results/mazda/data/run_",
     "Prefix of path to save results to.",
 )
 

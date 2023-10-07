@@ -55,6 +55,7 @@ from ..space import Box, SearchSpace
 from ..types import State, Tag, TensorType
 from .function import (
     BatchMonteCarloExpectedImprovement,
+    ExpectedConstrainedImprovement,
     ExpectedImprovement,
     ProbabilityOfImprovement,
     SCBO,
@@ -388,14 +389,14 @@ class ConstrainedTURBOEfficientGlobalOptimization:
 
         if not isinstance(
             builder,
-            (ThompsonSamplingAugmentedLagrangian, SCBO),
+            (ThompsonSamplingAugmentedLagrangian, SCBO, ExpectedConstrainedImprovement),
         ):
             raise ValueError(
-                "ConstrainedTURBOEfficientGlobalOptimization only implemented for ThompsonSamplingAugmentedLagrangian and SCBO acquisition functions."
+                "ConstrainedTURBOEfficientGlobalOptimization only implemented for ThompsonSamplingAugmentedLagrangian, SCBO and ExpectedConstrainedImprovement acquisition functions."
             )
 
         if batch_size > 1:  # need to build batches of points
-            if isinstance(builder, VectorizedAcquisitionFunctionBuilder):
+            if isinstance(builder, ThompsonSamplingAugmentedLagrangian, SCBO):
                 # optimize batch elements independently
                 optimizer = constrained_turbo_batchify_vectorize(optimizer, batch_size)
             else:
@@ -403,7 +404,7 @@ class ConstrainedTURBOEfficientGlobalOptimization:
                     "ConstrainedTurboEfficientGlobalOptimization only implemented for vectorized acquisition functions."
                 )
 
-        self._builder: ThompsonSamplingAugmentedLagrangian | SCBO = builder
+        self._builder: ThompsonSamplingAugmentedLagrangian | SCBO | ExpectedConstrainedImprovement = builder
         self._optimizer = optimizer
         self._num_query_points = batch_size
         self._acquisition_function = None
@@ -1555,7 +1556,7 @@ class ConstrainedTURBO(
         self,
         perturbation_prob: float,
         rule: ConstrainedTURBOEfficientGlobalOptimization,
-        equality_constraint_tolerance: float,
+        equality_constraint_tolerance: float = 0.01,
         num_trust_regions: int = 1,
         L_min: Optional[float] = None,
         L_init: Optional[float] = None,
@@ -1689,8 +1690,8 @@ class ConstrainedTURBO(
         self.valid_y_found = valid_y_found or self.valid_y_found
 
         def state_func(
-            state: TURBO.State | None,
-        ) -> tuple[TURBO.State | None, TensorType]:
+            state: ConstrainedTURBO.State | None,
+        ) -> tuple[ConstrainedTURBO.State | None, TensorType]:
             if state is None:  # initialise first TR
                 L, failure_counter, success_counter = self._L_init, 0, 0
             else:  # update TR
@@ -1736,12 +1737,17 @@ class ConstrainedTURBO(
                 local_model.optimize(local_dataset)
 
             # Use local model and local dataset to choose next query point(s). Note that
-            # we pass in the global datasets here so that the Lagrange multipliers can
+            # we pass in the global datasets when using TS-AL so that the Lagrange multipliers can
             # be updated correctly when using TS-AL.
-            points = self._rule.acquire(
-                acquisition_space, x_min, self.perturbation_prob, local_models, datasets
-            )
-            state_ = TURBO.State(
+            if isinstance(self._rule._builder, ThompsonSamplingAugmentedLagrangian):
+                points = self._rule.acquire(
+                    acquisition_space, x_min, self.perturbation_prob, local_models, datasets
+                )
+            else:
+                points = self._rule.acquire(
+                    acquisition_space, x_min, self.perturbation_prob, local_models, local_datasets
+                ) 
+            state_ = ConstrainedTURBO.State(
                 acquisition_space, L, failure_counter, success_counter, y_min
             )
 
