@@ -17,10 +17,10 @@ EQUALITY_CONSTRAINT_TWO = "EQUALITY_CONSTRAINT_TWO"
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_integer('num_experiments', 1, 'Number of repeats of experiment to run.')
-flags.DEFINE_integer('num_samples', 100000, 'Number of random points to sample.')
-flags.DEFINE_enum('problem', 'KEANE30', ['LSQ', 'GSBP', 'LOCKWOOD', 'ACKLEY10', 'KEANE30', 'MAZDA'], 'Test problem to use.')
-flags.DEFINE_string('save_path', 'results/20-04-23dsfdsf/lockwood_random/data/', 'Prefix of path to save results to.')
+flags.DEFINE_integer('num_experiments', 30, 'Number of repeats of experiment to run.')
+flags.DEFINE_integer('num_samples', 400, 'Number of random points to sample.')
+flags.DEFINE_enum('problem', 'LOCKWOOD', ['LSQ', 'GSBP', 'LOCKWOOD', 'ACKLEY10', 'KEANE30', 'MAZDA'], 'Test problem to use.')
+flags.DEFINE_string('save_path', 'random_baseline_results/lockwood/data/', 'Prefix of path to save results to.')
 
 
 def set_seed(seed: int):

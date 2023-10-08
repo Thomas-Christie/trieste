@@ -54,6 +54,7 @@ from ..observer import (
 from ..space import Box, SearchSpace
 from ..types import State, Tag, TensorType
 from .function import (
+    BatchExpectedConstrainedImprovement,
     BatchMonteCarloExpectedImprovement,
     ExpectedConstrainedImprovement,
     ExpectedImprovement,
@@ -77,6 +78,7 @@ from .optimizer import (
     automatic_optimizer_selector,
     batchify_joint,
     batchify_vectorize,
+    constrained_turbo_batchify_joint,
     constrained_turbo_batchify_vectorize,
 )
 from .sampler import ExactThompsonSampler, ThompsonSampler
@@ -370,7 +372,7 @@ class ConstrainedTURBOEfficientGlobalOptimization:
 
     def __init__(
         self,
-        builder: ThompsonSamplingAugmentedLagrangian | SCBO,
+        builder: ThompsonSamplingAugmentedLagrangian | SCBO | ExpectedConstrainedImprovement | BatchExpectedConstrainedImprovement,
         optimizer: ConstrainedTrustRegionAcquisitionOptimizer[SearchSpaceType],
         batch_size: int = 1,
     ):
@@ -389,22 +391,24 @@ class ConstrainedTURBOEfficientGlobalOptimization:
 
         if not isinstance(
             builder,
-            (ThompsonSamplingAugmentedLagrangian, SCBO, ExpectedConstrainedImprovement),
+            (ThompsonSamplingAugmentedLagrangian, SCBO, ExpectedConstrainedImprovement, BatchExpectedConstrainedImprovement),
         ):
             raise ValueError(
-                "ConstrainedTURBOEfficientGlobalOptimization only implemented for ThompsonSamplingAugmentedLagrangian, SCBO and ExpectedConstrainedImprovement acquisition functions."
+                "ConstrainedTURBOEfficientGlobalOptimization only implemented for ThompsonSamplingAugmentedLagrangian, SCBO and (Batch)ExpectedConstrainedImprovement acquisition functions."
             )
 
         if batch_size > 1:  # need to build batches of points
-            if isinstance(builder, ThompsonSamplingAugmentedLagrangian, SCBO):
+            if isinstance(builder, (ThompsonSamplingAugmentedLagrangian, SCBO)):
                 # optimize batch elements independently
                 optimizer = constrained_turbo_batchify_vectorize(optimizer, batch_size)
+            elif isinstance(builder, BatchExpectedConstrainedImprovement):
+                optimizer = constrained_turbo_batchify_joint(optimizer, batch_size)
             else:
                 raise NotImplementedError(
-                    "ConstrainedTurboEfficientGlobalOptimization only implemented for vectorized acquisition functions."
+                    "ConstrainedTurboEfficientGlobalOptimization only implemented for specific acquisition functions."
                 )
 
-        self._builder: ThompsonSamplingAugmentedLagrangian | SCBO | ExpectedConstrainedImprovement = builder
+        self._builder: ThompsonSamplingAugmentedLagrangian | SCBO | ExpectedConstrainedImprovement | BatchExpectedConstrainedImprovement = builder
         self._optimizer = optimizer
         self._num_query_points = batch_size
         self._acquisition_function = None

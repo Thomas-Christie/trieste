@@ -22,6 +22,7 @@ from .active_learning import (
     integrated_variance_reduction,
     predictive_variance,
 )
+from .batch_eci import BatchExpectedConstrainedImprovement
 from .continuous_thompson_sampling import (
     GreedyContinuousThompsonSampling,
     ParallelContinuousThompsonSampling,

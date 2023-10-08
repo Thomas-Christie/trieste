@@ -41,6 +41,7 @@ from ..interface import (
     SingleModelAcquisitionBuilder,
     SingleModelVectorizedAcquisitionBuilder,
 )
+from ...observer import OBJECTIVE, INEQUALITY_CONSTRAINT_PREFIX
 from .utils import MultivariateNormalCDF
 
 
@@ -650,6 +651,7 @@ class ExpectedConstrainedImprovement(AcquisitionFunctionBuilder[ProbabilisticMod
         self._constraint_fn: Optional[AcquisitionFunction] = None
         self._expected_improvement_fn: Optional[AcquisitionFunction] = None
         self._constrained_improvement_fn: Optional[AcquisitionFunction] = None
+        self._iteration = 0
 
     def __repr__(self) -> str:
         """"""
@@ -724,6 +726,23 @@ class ExpectedConstrainedImprovement(AcquisitionFunctionBuilder[ProbabilisticMod
         """
         tf.debugging.Assert(datasets is not None, [tf.constant([])])
         datasets = cast(Mapping[Tag, Dataset], datasets)
+
+        self._iteration += 1
+        print(f"Iteration: {self._iteration}")
+
+        # Find the best valid objective value seen so far
+        satisfied_mask = tf.constant(value=True, shape=datasets[OBJECTIVE].observations.shape)
+        for tag, dataset in datasets.items():
+            if tag.startswith(INEQUALITY_CONSTRAINT_PREFIX):
+                constraint_vals = dataset.observations
+                valid_constraint_vals = constraint_vals <= 0
+                satisfied_mask = tf.logical_and(satisfied_mask, valid_constraint_vals)
+
+        if tf.reduce_sum(tf.cast(satisfied_mask, tf.int32)) != 0:
+            objective_vals = datasets[OBJECTIVE].observations
+            valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
+            self._best_valid_observation = tf.math.reduce_min(valid_y)
+        print(f"Best Valid Observation: {self._best_valid_observation}")
 
         objective_model = models[self._objective_tag]
         objective_dataset = datasets[self._objective_tag]

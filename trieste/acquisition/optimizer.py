@@ -144,6 +144,8 @@ def _get_max_discrete_points(
     target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
     x_min: Optional[TensorType] = None,
     perturbation_prob: Optional[float] = None,
+    batchify_joint: bool = False,
+    batch_size: Optional[int] = None,
 ) -> TensorType:
     # check if we need a vectorized optimizer
     if isinstance(target_func, tuple):
@@ -161,9 +163,16 @@ def _get_max_discrete_points(
         # high-dimensional spaces we shouldn't perturb all dimensions of the best
         # discovered point so far when choosing a new point to query.
         tf.debugging.assert_rank(x_min, 1)
-        x_min = x_min[None, None, ...]
-        perturb = tf.cast(tfp.distributions.Bernoulli(probs=perturbation_prob).sample(sample_shape=points.shape), tf.bool)
-        points = tf.where(perturb, points, x_min)
+        if not batchify_joint:
+            x_min = x_min[None, None, ...]
+            perturb = tf.cast(tfp.distributions.Bernoulli(probs=perturbation_prob).sample(sample_shape=points.shape), tf.bool)
+            points = tf.where(perturb, points, x_min)
+        else:
+            # Reshape x_min to be consistent with reshaping of candidate points done for batchify_joint
+            x_min = tf.tile(x_min, [batch_size])[None, None, ...]
+            perturb = tf.cast(tfp.distributions.Bernoulli(probs=perturbation_prob).sample(sample_shape=points.shape), tf.bool)
+            points = tf.where(perturb, points, x_min)
+
     tiled_points = tf.tile(points, [1, V, 1])
     target_func_values = target_func(tiled_points)
     tf.debugging.assert_shapes(
@@ -753,6 +762,54 @@ def constrained_turbo_batchify_vectorize(
 
     return optimizer
 
+# NOTE: Only to be used with `get_max_discrete_points`
+def constrained_turbo_batchify_joint(
+    batch_size_one_optimizer: ConstrainedTrustRegionAcquisitionOptimizer[SearchSpaceType],
+    batch_size: int,
+) -> ConstrainedTrustRegionAcquisitionOptimizer[SearchSpaceType]:
+    """
+    Adjusted version of :func:`batchify_joint` for use with the constrained trust
+    region acquisition optimizer, which takes two additional arguments, `x_min` and
+    `perturbation_prob`.
+
+    A wrapper around our :const:`AcquisitionOptimizer`s. This class wraps a
+    :const:`AcquisitionOptimizer` to allow it to jointly optimize the batch elements considered
+    by a batch acquisition function.
+
+    :param batch_size_one_optimizer: An optimizer that returns only batch size one, i.e. produces a
+            single point with shape [1, D].
+    :param batch_size: The number of points in the batch.
+    :return: An :const:`AcquisitionOptimizer` that will provide a batch of points with shape [B, D].
+    """
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+    def optimizer(
+        search_space: SearchSpaceType,
+        f: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
+        x_min: TensorType,
+        perturbation_prob: float,
+    ) -> TensorType:
+        expanded_search_space = search_space**batch_size  # points have shape [B * D]
+
+        if isinstance(f, tuple):
+            raise ValueError(
+                "batchify_joint cannot be applied to a vectorized acquisition function"
+            )
+        af: AcquisitionFunction = f  # type checking can get confused by closure of f
+
+        def target_func_with_vectorized_inputs(
+            x: TensorType,
+        ) -> TensorType:  # [..., 1, B * D] -> [..., 1]
+            return af(tf.reshape(x, x.shape[:-2].as_list() + [batch_size, -1]))
+
+        vectorized_points = batch_size_one_optimizer(  # [1, B * D]
+            expanded_search_space, target_func_with_vectorized_inputs, x_min, perturbation_prob, True, batch_size
+        )
+        return tf.reshape(vectorized_points, [batch_size, -1])  # [B, D]
+
+    return optimizer
+
 
 def generate_adam_optimizer(
     num_initial_samples: int = NUM_SAMPLES_MIN,
@@ -929,7 +986,7 @@ def generate_adam_optimizer(
 
 def generate_random_search_optimizer(
     num_samples: int = NUM_SAMPLES_MIN,
-) -> AcquisitionOptimizer[SearchSpace]:
+) -> ConstrainedTrustRegionAcquisitionOptimizer[SearchSpace]:
     """
     Generate an acquisition optimizer that samples `num_samples` random points across the space.
     The default is to sample at `NUM_SAMPLES_MIN` locations.
@@ -948,6 +1005,8 @@ def generate_random_search_optimizer(
         target_func: Union[AcquisitionFunction, Tuple[AcquisitionFunction, int]],
         x_min=None,
         perturbation_prob=None,
+        batchify_joint: bool = False,
+        batch_size: Optional[int] = None,
     ) -> TensorType:
         """
         A random search :const:`AcquisitionOptimizer` defined for
@@ -968,10 +1027,13 @@ def generate_random_search_optimizer(
         (https://arxiv.org/pdf/1910.01739.pdf) reason that once we're in
         high-dimensional spaces we shouldn't perturb all dimensions of the best
         discovered point so far when choosing a new point to query.
+        :batchify_joint: Whether to use :func:`batchify_joint` to jointly optimize the
+        batch
+        :batch_size: The number of points in the batch (needed if jointly optimizing)
         :return: The V points in ``space`` that maximises ``target_func``, with shape [V, D].
         """
         points = space.sample(num_samples)[:, None, :]
-        return _get_max_discrete_points(points, target_func, x_min, perturbation_prob)
+        return _get_max_discrete_points(points, target_func, x_min, perturbation_prob, batchify_joint, batch_size)
 
     return optimize_random
 
