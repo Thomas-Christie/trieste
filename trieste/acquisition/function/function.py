@@ -652,6 +652,7 @@ class ExpectedConstrainedImprovement(AcquisitionFunctionBuilder[ProbabilisticMod
         self._expected_improvement_fn: Optional[AcquisitionFunction] = None
         self._constrained_improvement_fn: Optional[AcquisitionFunction] = None
         self._iteration = 0
+        self._best_valid_observation = None  # Kept to None until a valid observation is found.
 
     def __repr__(self) -> str:
         """"""

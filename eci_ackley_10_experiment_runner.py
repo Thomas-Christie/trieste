@@ -80,7 +80,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "final_tsfdgfdgf_al_results/ackley_10/trust_region/data/run_",
+    "eci_results/ackley_10/data/run_",
     "Prefix of path to save results to.",
 )
 
