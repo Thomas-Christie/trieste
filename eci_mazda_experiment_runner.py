@@ -134,8 +134,8 @@ def main(argv):
         optimizer = generate_random_search_optimizer(
             num_samples=FLAGS.num_acquisition_optimiser_start_points
         )
-        pof_arr = [trieste.acquisition.ProbabilityOfFeasibility(threshold=0) for _ in range(1, 55)]
-        pof = Product([pof_arr[i].using(f"INEQUALITY_CONSTRAINT_{i+1}") for i in range(0, 54)])
+        pof_arr = [trieste.acquisition.ProbabilityOfFeasibility(threshold=0) for _ in range(0, 54)]
+        pof = Product(*tuple(pof_arr[i].using(f"INEQUALITY_CONSTRAINT_{i+1}") for i in range(0, 54)))
         batch_eci = BatchExpectedConstrainedImprovement(
             sample_size=FLAGS.mc_sample_size,
             threshold=0,

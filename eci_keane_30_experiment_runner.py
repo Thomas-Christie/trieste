@@ -103,7 +103,7 @@ def set_seed(seed: int):
 
 def main(argv):
     print(f"Running Experiment with Flags: {FLAGS.flags_into_string()}")
-    for run in range(8, FLAGS.num_experiments):
+    for run in range(FLAGS.num_experiments):
         print(f"Starting Run: {run}")
         set_seed(run + 42)
         search_space = Box(
