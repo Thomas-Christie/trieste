@@ -155,3 +155,4 @@ functions/mazda/Mazda_CdMOBP/src/*
 # Mazda result files
 final_scbo_results/mazda/data/*
 final_ts_al_results/mazda/data/*
+eci_results/mazda/data/*
