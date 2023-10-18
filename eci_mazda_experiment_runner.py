@@ -177,7 +177,7 @@ def main(argv):
                 initial_models,
                 rule,
                 track_state=False,
-        ).try_get_final_datasets()
+            ).try_get_final_datasets()
         with open(FLAGS.save_path + f"{run}_data.pkl", "wb") as fp:
             pickle.dump(data, fp)
 
