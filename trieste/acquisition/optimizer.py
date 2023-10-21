@@ -899,7 +899,7 @@ def generate_adam_optimizer(
 
         _, top_k_indices = tf.math.top_k(
             tf.transpose(target_func_values), k=1
-        )  # [1, num_optimization_runs] or [V, num_optimization_runs]
+        )  #  [V, 1]
 
         tiled_candidates = tf.transpose(
             tiled_candidates, [1, 0, 2]
@@ -955,10 +955,10 @@ def generate_adam_optimizer(
         adam_queried_values = target_func(clipped_adam_queried_locations)
         _, clipped_adam_queried_locations_top_k_indices = tf.math.top_k(
             tf.transpose(adam_queried_values), k=1
-        )  # [V, num_optimization_runs]
+        )  # [V, 1]
         clipped_adam_queried_locations = tf.transpose(
             clipped_adam_queried_locations, [1, 0, 2]
-        )  # [V, num_initial_samples, D]
+        )  # [V, num_adam_iters+1, D]
         best_batch_adam_queried_locations = tf.gather(
             clipped_adam_queried_locations,
             clipped_adam_queried_locations_top_k_indices,
