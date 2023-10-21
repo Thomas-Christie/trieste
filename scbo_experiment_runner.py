@@ -41,7 +41,12 @@ flags.DEFINE_integer(
 flags.DEFINE_enum(
     "problem",
     "MAZDA",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "KEANE30", "LUNAR10", "LUNAR30", "LUNAR50", "MAZDA"],
+    [
+        "LOCKWOOD",
+        "ACKLEY10",
+        "KEANE30",
+        "MAZDA",
+    ],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -91,7 +96,14 @@ flags.DEFINE_string(
 )
 
 
-def create_model(search_space, num_rff_features, kernel_name, likelihood_variance, trainable_likelihood, data):
+def create_model(
+    search_space,
+    num_rff_features,
+    kernel_name,
+    likelihood_variance,
+    trainable_likelihood,
+    data,
+):
     gpr = build_gpr(
         data,
         search_space,
@@ -117,7 +129,7 @@ def main(argv):
         set_seed(run + 42)
         if FLAGS.problem == "LOCKWOOD":
             search_space = Box(
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                tf.zeros(6, dtype=tf.float64), tf.ones(6, dtype=tf.float64)
             )
         elif FLAGS.problem == "ACKLEY10":
             search_space = Box(
@@ -131,20 +143,8 @@ def main(argv):
             search_space = Box(
                 tf.zeros(222, dtype=tf.float64), tf.ones(222, dtype=tf.float64)
             )
-        elif FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
-            search_space = Box(
-                tf.zeros(12, dtype=tf.float64), tf.ones(12, dtype=tf.float64)
-            )
-        else:
-            search_space = Box([0.0, 0.0], [1.0, 1.0])
 
-        if FLAGS.problem == "LSQ":
-            observer = trieste.objectives.utils.mk_multi_observer(
-                OBJECTIVE=objectives.linear_objective,
-                INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-                INEQUALITY_CONSTRAINT_TWO=constraints.toy_constraint_two,
-            )
-        elif FLAGS.problem == "ACKLEY10":
+        if FLAGS.problem == "ACKLEY10":
             observer = trieste.objectives.utils.mk_multi_observer(
                 OBJECTIVE=objectives.ackley_10,
                 INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,
@@ -160,21 +160,6 @@ def main(argv):
             observer = lockwood_constraint_observer
         elif FLAGS.problem == "MAZDA":
             observer = mazda_observer
-        elif FLAGS.problem == "LUNAR10":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 10, env
-            )
-        elif FLAGS.problem == "LUNAR30":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 30, env
-            )
-        elif FLAGS.problem == "LUNAR50":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 50, env
-            )
 
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
@@ -188,25 +173,20 @@ def main(argv):
             initial_inputs = search_space.sample_sobol(
                 FLAGS.num_initial_samples, skip=42 + run * FLAGS.num_initial_samples
             )
-        print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
-        if FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
-            initial_models = trieste.utils.map_values(
-                partial(
-                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, None, True),
-                initial_data,
-            )
-        else:
-            initial_models = trieste.utils.map_values(
-                partial(
-                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, 1e-6, False),
-                initial_data,
-            )
-
-        print(f"Initial Objective Likelihood Variance: {initial_models['OBJECTIVE'].model.likelihood.variance}")
+        initial_models = trieste.utils.map_values(
+            partial(
+                create_model,
+                search_space,
+                FLAGS.num_rff_features,
+                FLAGS.kernel_name,
+                1e-6,
+                False,
+            ),
+            initial_data,
+        )
 
         scbo = SCBO()
-
         if FLAGS.acquisition_fn_optimiser == "random":
             optimizer = generate_random_search_optimizer(
                 num_samples=FLAGS.num_acquisition_optimiser_start_points
@@ -218,7 +198,7 @@ def main(argv):
 
         if FLAGS.trust_region:
             dimensionality = search_space.dimension
-            perturbation_prob = min(1.0, 20.0/tf.cast(dimensionality, tf.float64))
+            perturbation_prob = min(1.0, 20.0 / tf.cast(dimensionality, tf.float64))
             constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
                 scbo,
                 optimizer=optimizer,

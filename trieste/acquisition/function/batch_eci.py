@@ -32,7 +32,6 @@ class BatchExpectedConstrainedImprovement(AcquisitionFunctionBuilder[Probabilist
             objective_vals = datasets[OBJECTIVE].observations
             valid_y = tf.boolean_mask(objective_vals, satisfied_mask)
             self._best_valid_observation = tf.math.reduce_min(valid_y)
-        print(f"Best Valid Observation: {self._best_valid_observation}")
 
         objective_model = models[OBJECTIVE]
         objective_dataset = datasets[OBJECTIVE]
@@ -57,7 +56,6 @@ class BatchExpectedConstrainedImprovement(AcquisitionFunctionBuilder[Probabilist
         else:
             mean, _ = objective_model.predict(objective_dataset.query_points)
             eta = tf.reduce_min(tf.boolean_mask(mean, is_feasible), axis=0)
-        print(f"eta: {eta}")
 
         def batch_efi(at):
             samples = {
@@ -66,7 +64,6 @@ class BatchExpectedConstrainedImprovement(AcquisitionFunctionBuilder[Probabilist
             }
 
             feasible_mask = tf.constant(value=True, shape=samples[OBJECTIVE].shape)  # [N, S, B]
-            print(f"Feasible Mask Shape: {feasible_mask.shape} should be [N, S, B]")
             for tag, sample in samples.items():
                 if tag.startswith(INEQUALITY_CONSTRAINT_PREFIX):
                     feasible_mask = tf.logical_and(feasible_mask, sample <= self._threshold)

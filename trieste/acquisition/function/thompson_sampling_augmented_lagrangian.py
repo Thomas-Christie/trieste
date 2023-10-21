@@ -106,7 +106,6 @@ class ThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuilder[H
 
         if self._penalty is None:
             initial_penalty = self._get_initial_penalty(datasets)
-            print(f"Initial Penalty: {initial_penalty}")
             self._penalty = tf.constant(initial_penalty, dtype=tf.float64)
 
         if self._known_objective is not None:
@@ -321,9 +320,6 @@ class ThompsonSamplingAugmentedLagrangian(VectorizedAcquisitionFunctionBuilder[H
 
         if not (equality_constraints_satisfied and inequality_constraints_satisfied):
             self._penalty = self._penalty / tf.pow(tf.constant(2.0, dtype=tf.float64), min(self._batch_size, 10))
-            print(f"Not Satisfied. Updated Penalty: {self._penalty}")
-        else:
-            print("Satisfied")
 
     def _deterministic_augmented_lagrangian(self,
                                             datasets: Mapping[Tag, Dataset]) -> TensorType:

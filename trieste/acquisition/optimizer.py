@@ -975,10 +975,6 @@ def generate_adam_optimizer(
         assert tf.reduce_all(optimised_vals >= initial_vals)
         assert tf.reduce_all(best_batch_adam_queried_locations >= lower_lim)
         assert tf.reduce_all(best_batch_adam_queried_locations <= upper_lim)
-        print(f"Initial Vals: {initial_vals}")
-        print(f"Final Vals: {optimised_vals}")
-        print(f"Initial Points: {initial_points}")
-        print(f"Points to Return: {best_batch_adam_queried_locations}")
         return best_batch_adam_queried_locations[0]
 
     return al_adam_optimize_continuous

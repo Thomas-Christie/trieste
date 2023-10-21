@@ -52,7 +52,7 @@ flags.DEFINE_float(
 flags.DEFINE_enum(
     "problem",
     "MAZDA",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10", "KEANE30", "LUNAR10", "LUNAR30", "LUNAR50", "MAZDA"],
+    ["LOCKWOOD", "ACKLEY10", "KEANE30", "MAZDA"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -85,11 +85,6 @@ flags.DEFINE_integer(
     5000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
-)
-flags.DEFINE_boolean(
-    "known_objective",
-    False,
-    "Whether to use a known objective function or model it with a surrogate.",
 )
 flags.DEFINE_enum(
     "kernel_name",
@@ -133,7 +128,7 @@ def main(argv):
         set_seed(run + 42)
         if FLAGS.problem == "LOCKWOOD":
             search_space = Box(
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+                tf.zeros(6, dtype=tf.float64), tf.ones(6, dtype=tf.float64)
             )
         elif FLAGS.problem == "ACKLEY10":
             search_space = Box(
@@ -147,27 +142,8 @@ def main(argv):
             search_space = Box(
                 tf.zeros(222, dtype=tf.float64), tf.ones(222, dtype=tf.float64)
             )
-        elif FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
-            search_space = Box(
-                tf.zeros(12, dtype=tf.float64), tf.ones(12, dtype=tf.float64)
-            )
-        else:
-            search_space = Box([0.0, 0.0], [1.0, 1.0])
 
-        if FLAGS.problem == "LSQ":
-            observer = trieste.objectives.utils.mk_multi_observer(
-                OBJECTIVE=objectives.linear_objective,
-                INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-                INEQUALITY_CONSTRAINT_TWO=constraints.toy_constraint_two,
-            )
-        elif FLAGS.problem == "GSBP":
-            observer = trieste.objectives.utils.mk_multi_observer(
-                OBJECTIVE=objectives.goldstein_price,
-                INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-                EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
-                EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint,
-            )
-        elif FLAGS.problem == "ACKLEY10":
+        if FLAGS.problem == "ACKLEY10":
             observer = trieste.objectives.utils.mk_multi_observer(
                 OBJECTIVE=objectives.ackley_10,
                 INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,
@@ -183,23 +159,7 @@ def main(argv):
             observer = mazda_observer
         elif FLAGS.problem == "LOCKWOOD":
             observer = lockwood_constraint_observer
-        elif FLAGS.problem == "LUNAR10":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 10, env
-            )
-        elif FLAGS.problem == "LUNAR30":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 30, env
-            )
-        elif FLAGS.problem == "LUNAR50":
-            env = gym.make("LunarLander-v2")
-            observer = partial(
-                lunar_lander.lunar_lander_observer, 50, env
-            )
             
-
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
                 FLAGS.num_initial_samples, seed=run + 42
@@ -212,31 +172,16 @@ def main(argv):
             initial_inputs = search_space.sample_sobol(
                 FLAGS.num_initial_samples, skip=42 + run * FLAGS.num_initial_samples
             )
-        print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
-        if FLAGS.problem == "LUNAR10" or FLAGS.problem == "LUNAR30" or FLAGS.problem == "LUNAR50":
-            initial_models = trieste.utils.map_values(
-                partial(
-                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, None, True),
-                initial_data,
-            )
-        else:
-            initial_models = trieste.utils.map_values(
-                partial(
-                    create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, 1e-6, False),
-                initial_data,
-            )
-
-        if FLAGS.known_objective:
-            if FLAGS.problem == "LOCKWOOD":
-                known_objective = objectives.lockwood_objective_trajectory
-        else:
-            known_objective = None
+        initial_models = trieste.utils.map_values(
+            partial(
+                create_model, search_space, FLAGS.num_rff_features, FLAGS.kernel_name, 1e-6, False),
+            initial_data,
+        )
 
         # Initialise inequality constraint Lagrange multipliers
         if (
-            FLAGS.problem == "LSQ"
-            or FLAGS.problem == "ACKLEY10"
+            FLAGS.problem == "ACKLEY10"
             or FLAGS.problem == "LOCKWOOD"
             or FLAGS.problem == "KEANE30"
         ):
@@ -244,63 +189,20 @@ def main(argv):
                 INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64),
                 INEQUALITY_CONSTRAINT_TWO: tf.zeros(1, dtype=tf.float64),
             }
-        elif FLAGS.problem == "GSBP":
-            inequality_lambda = {
-                INEQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64)
-            }
         elif FLAGS.problem == "MAZDA":
             inequality_lambda = {
                 f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(1, 55)
             }
-        elif FLAGS.problem == "LUNAR10":
-            inequality_lambda = {
-                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(10)
-            }
-        elif FLAGS.problem == "LUNAR30":
-            inequality_lambda = {
-                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(30)
-            }
-        elif FLAGS.problem == "LUNAR50":
-            inequality_lambda = {
-                f"INEQUALITY_CONSTRAINT_{i}": tf.zeros(1, dtype=tf.float64) for i in range(50)
-            }
 
-        # Initialise equality constraint Lagrange multipliers
-        if FLAGS.problem == "GSBP":
-            equality_lambda = {
-                EQUALITY_CONSTRAINT_ONE: tf.zeros(1, dtype=tf.float64),
-                EQUALITY_CONSTRAINT_TWO: tf.zeros(1, dtype=tf.float64),
-            }
-
-        if (
-            FLAGS.problem == "LSQ"
-            or FLAGS.problem == "ACKLEY10"
-            or FLAGS.problem == "KEANE30"
-            or FLAGS.problem == "LOCKWOOD"
-            or FLAGS.problem == "MAZDA"
-            or FLAGS.problem == "LUNAR10"
-            or FLAGS.problem == "LUNAR30"
-            or FLAGS.problem == "LUNAR50"
-        ):
-            augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
-                known_objective=known_objective,
-                inequality_lambda=inequality_lambda,
-                equality_lambda=None,
-                batch_size=FLAGS.batch_size,
-                penalty=None,
-                epsilon=FLAGS.epsilon,
-                search_space=search_space,
-            )
-        elif FLAGS.problem == "GSBP":
-            augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
-                known_objective=known_objective,
-                inequality_lambda=inequality_lambda,
-                equality_lambda=equality_lambda,
-                batch_size=FLAGS.batch_size,
-                penalty=None,
-                epsilon=FLAGS.epsilon,
-                search_space=search_space,
-            )
+        augmented_lagrangian = ThompsonSamplingAugmentedLagrangian(
+            known_objective=None,
+            inequality_lambda=inequality_lambda,
+            equality_lambda=None,
+            batch_size=FLAGS.batch_size,
+            penalty=None,
+            epsilon=FLAGS.epsilon,
+            search_space=search_space,
+        )
 
         if FLAGS.acquisition_fn_optimiser == "l-bfgs-b":
             optimizer = generate_continuous_optimizer(

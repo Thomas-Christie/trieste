@@ -17,10 +17,10 @@ from trieste.acquisition.rule import (
 )
 from trieste.bayesian_optimizer import BayesianOptimizer
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
+from functions.lockwood.runlock.runlock import lockwood_constraint_observer
+from functions import constraints, objectives
 
 from trieste.space import Box
-from functions import constraints
-from functions import objectives
 from functools import partial
 import pickle
 
@@ -35,13 +35,13 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    190,
+    370,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_enum(
     "problem",
-    "ACKLEY10",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10"],
+    "LOCKWOOD",
+    ["LOCKWOOD", "ACKLEY10"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -50,11 +50,8 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 1, "Number of points to sample at each iteration of BO."
-)
-flags.DEFINE_integer(
     "num_initial_samples",
-    10,
+    30,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -65,7 +62,7 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    5000,
+    3000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
@@ -80,7 +77,7 @@ flags.DEFINE_boolean(
 )
 flags.DEFINE_string(
     "save_path",
-    "eci_results/ackley_10/data/run_",
+    "eci_results/lockwood/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -109,15 +106,21 @@ def main(argv):
     for run in range(FLAGS.num_experiments):
         print(f"Starting Run: {run}")
         set_seed(run + 42)
-        search_space = Box(
-            tf.zeros(10, dtype=tf.float64), tf.ones(10, dtype=tf.float64)
-        )
-        observer = trieste.objectives.utils.mk_multi_observer(
+
+        if FLAGS.problem == "LOCKWOOD":
+            search_space = Box(
+                tf.zeros(6, dtype=tf.float64), tf.ones(6, dtype=tf.float64)
+            )
+            observer = lockwood_constraint_observer
+        elif FLAGS.problem == "ACKLEY10":
+            search_space = Box(
+                tf.zeros(10, dtype=tf.float64), tf.ones(10, dtype=tf.float64)
+            )
+            observer = trieste.objectives.utils.mk_multi_observer(
             OBJECTIVE=objectives.ackley_10,
             INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,
             INEQUALITY_CONSTRAINT_TWO=constraints.ackley_10_constraint_two,
-        )
-
+            )
 
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
@@ -132,7 +135,6 @@ def main(argv):
                 FLAGS.num_initial_samples, skip=42 + run * FLAGS.num_initial_samples
             )
 
-        print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
         initial_models = trieste.utils.map_values(
             partial(
@@ -155,7 +157,7 @@ def main(argv):
             constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
                 eci,
                 optimizer=optimizer,
-                batch_size=FLAGS.batch_size,
+                batch_size=1,
             )
             rule = ConstrainedTURBO(
                 perturbation_prob=perturbation_prob,
@@ -165,7 +167,7 @@ def main(argv):
                 L_max=tf.constant(1.6, dtype=tf.float64),
                 L_init=tf.constant(0.8, dtype=tf.float64),
                 success_tolerance=max(3, math.ceil(dimensionality / 10)),
-                failure_tolerance=math.ceil(dimensionality / FLAGS.batch_size),
+                failure_tolerance=dimensionality,
             )
             bo = trieste.bayesian_optimizer.BayesianOptimizer(observer, search_space)
             data = bo.optimize(

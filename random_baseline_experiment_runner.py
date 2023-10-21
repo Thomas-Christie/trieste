@@ -52,19 +52,7 @@ def main(argv):
         else:
             search_space = Box([0.0, 0.0], [1.0, 1.0])
 
-
-        if FLAGS.problem == "LSQ":
-            observer = trieste.objectives.utils.mk_multi_observer(
-                OBJECTIVE=objectives.linear_objective,
-                INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-                INEQUALITY_CONSTRAINT_TWO=constraints.toy_constraint_two)
-        elif FLAGS.problem == "GSBP":
-            observer = trieste.objectives.utils.mk_multi_observer(
-                OBJECTIVE=objectives.goldstein_price,
-                INEQUALITY_CONSTRAINT_ONE=constraints.toy_constraint_one,
-                EQUALITY_CONSTRAINT_ONE=constraints.centered_branin,
-                EQUALITY_CONSTRAINT_TWO=constraints.parr_constraint)
-        elif FLAGS.problem == "ACKLEY10":
+        if FLAGS.problem == "ACKLEY10":
             observer = trieste.objectives.utils.mk_multi_observer(
                 OBJECTIVE=objectives.ackley_10,
                 INEQUALITY_CONSTRAINT_ONE=constraints.ackley_10_constraint_one,

@@ -14,7 +14,12 @@ def lockwood_constraint_observer(query_points: TensorType) -> Mapping[Tag, Datas
     initial_wd = os.getcwd()
 
     # Lockwood executable needs to be run from its own directory
-    os.chdir("/Users/thomaschristie/Documents/GitHub.nosync/trieste/functions/lockwood/runlock/")
+    # e.g. "trieste/functions/lockwood/runlock/"
+    # Refer to the README for instructions on how to obtain the Lockwood executable
+    LOCKWOOD_EXECUTABLE_DIR = ""
+    if LOCKWOOD_EXECUTABLE_DIR == "":
+        raise ValueError("LOCKWOOD_EXECUTABLE_DIR must be set to the directory containing the Lockwood problem executable")
+    os.chdir(LOCKWOOD_EXECUTABLE_DIR)
     observations = [[], [], []]
     scaled_query_points = query_points * 20000
     for scaled_query_point in scaled_query_points:

@@ -395,7 +395,6 @@ def _get_kernel(
         kernel.variance.prior = tfp.distributions.LogNormal(
             tf.math.log(variance), KERNEL_PRIOR_SCALE
         )
-    print(f"Lengthscale Transformations: {kernel.lengthscales.transform}")
 
     return kernel
 

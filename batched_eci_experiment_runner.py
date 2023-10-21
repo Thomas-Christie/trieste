@@ -9,7 +9,8 @@ import math
 import numpy as np
 import trieste
 from trieste.acquisition.combination import Product
-from trieste.acquisition.optimizer import generate_continuous_optimizer
+from trieste.acquisition.optimizer import generate_random_search_optimizer
+from trieste.acquisition.function import BatchExpectedConstrainedImprovement
 from trieste.acquisition.rule import (
     EfficientGlobalOptimization,
     ConstrainedTURBO,
@@ -17,9 +18,9 @@ from trieste.acquisition.rule import (
 )
 from trieste.bayesian_optimizer import BayesianOptimizer
 from trieste.models.gpflow import build_gpr, GaussianProcessRegression
-from functions.lockwood.runlock.runlock import lockwood_constraint_observer
-
 from trieste.space import Box
+from functions import constraints, objectives
+from functions.mazda.Mazda_CdMOBP.src.mazda_runner import mazda_observer
 from functools import partial
 import pickle
 
@@ -34,13 +35,13 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("num_experiments", 30, "Number of repeats of experiment to run.")
 flags.DEFINE_integer(
     "num_bo_iterations",
-    370,
+    38,
     "Number of iterations of Bayesian optimisation to run for.",
 )
 flags.DEFINE_enum(
     "problem",
-    "LOCKWOOD",
-    ["LSQ", "GSBP", "LOCKWOOD", "ACKLEY10"],
+    "KEANE30",
+    ["KEANE30", "MAZDA"],
     "Test problem to use.",
 )
 flags.DEFINE_integer(
@@ -49,11 +50,11 @@ flags.DEFINE_integer(
     "Number of Random Fourier Features to use when approximating the kernel.",
 )
 flags.DEFINE_integer(
-    "batch_size", 1, "Number of points to sample at each iteration of BO."
+    "batch_size", 50, "Number of points to sample at each iteration of BO."
 )
 flags.DEFINE_integer(
     "num_initial_samples",
-    30,
+    100,
     "Number of random samples to fit models before starting BO.",
 )
 flags.DEFINE_enum(
@@ -64,7 +65,7 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_integer(
     "num_acquisition_optimiser_start_points",
-    3000,
+    5000,
     "Number of starting points to randomly sample from"
     "acquisition function when optimising it.",
 )
@@ -77,9 +78,12 @@ flags.DEFINE_enum(
 flags.DEFINE_boolean(
     "trust_region", True, "Use a trust region for optimising the acquisition function."
 )
+flags.DEFINE_integer(
+    "mc_sample_size", 50, "Number of samples to use when estimating ECI."
+)
 flags.DEFINE_string(
     "save_path",
-    "eci_results/lockwood/data/run_",
+    "eci_results/keane_30/data/run_",
     "Prefix of path to save results to.",
 )
 
@@ -108,10 +112,22 @@ def main(argv):
     for run in range(FLAGS.num_experiments):
         print(f"Starting Run: {run}")
         set_seed(run + 42)
-        search_space = Box(
-            tf.zeros(6, dtype=tf.float64), tf.ones(6, dtype=tf.float64)
-        )
-        observer = lockwood_constraint_observer
+
+        if FLAGS.problem == "KEANE30":
+            search_space = Box(
+                tf.zeros(30, dtype=tf.float64), tf.ones(30, dtype=tf.float64)
+            )
+            observer = trieste.objectives.utils.mk_multi_observer(
+                OBJECTIVE=objectives.keane_bump_30,
+                INEQUALITY_CONSTRAINT_ONE=constraints.keane_bump_30_constraint_one,
+                INEQUALITY_CONSTRAINT_TWO=constraints.keane_bump_30_constraint_two,
+            )
+        elif FLAGS.problem == "MAZDA":
+            search_space = Box(
+                tf.zeros(222, dtype=tf.float64), tf.ones(222, dtype=tf.float64)
+            )
+            observer = mazda_observer
+
 
         if FLAGS.sampling_strategy == "uniform_random":
             initial_inputs = search_space.sample(
@@ -126,7 +142,6 @@ def main(argv):
                 FLAGS.num_initial_samples, skip=42 + run * FLAGS.num_initial_samples
             )
 
-        print(f"Initial Inputs: {initial_inputs}")
         initial_data = observer(initial_inputs)
         initial_models = trieste.utils.map_values(
             partial(
@@ -134,20 +149,27 @@ def main(argv):
             ),
             initial_data,
         )
-        optimizer = generate_continuous_optimizer(
-            num_initial_samples=FLAGS.num_acquisition_optimiser_start_points,
-            num_optimization_runs=1,
-            num_recovery_runs=0,
+        optimizer = generate_random_search_optimizer(
+            num_samples=FLAGS.num_acquisition_optimiser_start_points
         )
-        pof1 = trieste.acquisition.ProbabilityOfFeasibility(threshold=0)
-        pof2 = trieste.acquisition.ProbabilityOfFeasibility(threshold=0)
-        pof = Product(pof1.using(INEQUALITY_CONSTRAINT_ONE), pof2.using(INEQUALITY_CONSTRAINT_TWO))
-        eci = trieste.acquisition.ExpectedConstrainedImprovement(OBJECTIVE, pof)
+        
+        if FLAGS.problem == "KEANE30":
+            pof1 = trieste.acquisition.ProbabilityOfFeasibility(threshold=0)
+            pof2 = trieste.acquisition.ProbabilityOfFeasibility(threshold=0)
+            pof = Product(pof1.using(INEQUALITY_CONSTRAINT_ONE), pof2.using(INEQUALITY_CONSTRAINT_TWO))
+        elif FLAGS.problem == "MAZDA":
+            pof_arr = [trieste.acquisition.ProbabilityOfFeasibility(threshold=0) for _ in range(0, 54)]
+            pof = Product(*tuple(pof_arr[i].using(f"INEQUALITY_CONSTRAINT_{i+1}") for i in range(0, 54)))
+        batch_eci = BatchExpectedConstrainedImprovement(
+            sample_size=FLAGS.mc_sample_size,
+            threshold=0,
+            constraint_builder=pof,
+        )
         if FLAGS.trust_region:
             dimensionality = search_space.dimension
             perturbation_prob = min(1.0, 20.0/tf.cast(dimensionality, tf.float64))
             constrained_turbo_ego = ConstrainedTURBOEfficientGlobalOptimization(
-                eci,
+                batch_eci,
                 optimizer=optimizer,
                 batch_size=FLAGS.batch_size,
             )
@@ -171,7 +193,7 @@ def main(argv):
                 track_state=False,
             ).try_get_final_datasets()
         else:
-            rule = EfficientGlobalOptimization(eci, optimizer=optimizer)
+            rule = EfficientGlobalOptimization(batch_eci, optimizer=optimizer, num_query_points=FLAGS.batch_size)
             bo = BayesianOptimizer(observer, search_space)
             data = bo.optimize(
                 FLAGS.num_bo_iterations,
@@ -179,7 +201,7 @@ def main(argv):
                 initial_models,
                 rule,
                 track_state=False,
-        ).try_get_final_datasets()
+            ).try_get_final_datasets()
         with open(FLAGS.save_path + f"{run}_data.pkl", "wb") as fp:
             pickle.dump(data, fp)
 
